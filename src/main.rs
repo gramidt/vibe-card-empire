@@ -1558,43 +1558,48 @@ impl GameData {
     }
 
     fn generate_random_order(&mut self) {
-        let retailers = ["Amazon", "Starbucks", "Target", "iTunes", "Walmart"];
-        let denominations = [10, 15, 20, 25, 50];
+        // Match exactly what's available in market - retailer to denomination mapping
+        let available_cards = [
+            ("Amazon", 25),
+            ("Starbucks", 10), 
+            ("Target", 50),
+            ("iTunes", 15),
+            ("Walmart", 20),
+        ];
         let customer_names = ["Alice", "Bob", "Charlie", "Diana", "Eve", "Frank", "Grace", "Henry"];
         
         // Simple randomization based on current time/day
-        let retailer_idx = (self.day + self.hour as u32) % retailers.len() as u32;
-        let denom_idx = (self.day * 2 + self.minute as u32) % denominations.len() as u32;
+        let card_idx = (self.day + self.hour as u32) % available_cards.len() as u32;
         let customer_idx = (self.next_order_id + self.day) % customer_names.len() as u32;
         
-        let retailer = retailers[retailer_idx as usize];
-        let denomination = denominations[denom_idx as usize];
+        let (retailer, denomination) = available_cards[card_idx as usize];
         let customer_name = customer_names[customer_idx as usize];
         
         let quantity = 1 + (self.day % 5); // 1-5 cards
-        let base_price = denomination + 2; // Small markup from wholesale
         
-        // Reputation significantly affects pricing
-        let reputation_bonus = match self.reputation {
-            5 => denomination / 3,           // 33% bonus for 5-star
-            4 => denomination / 4,           // 25% bonus for 4-star  
-            3 => denomination / 5,           // 20% bonus for 3-star
-            2 => denomination / 10,          // 10% bonus for 2-star
-            1 => 0,                         // No bonus for 1-star
-            _ => 0,
+        // Customers want to buy at a discount from face value (that's the business model)
+        // Base offer is 85-95% of face value depending on reputation
+        let discount_percentage: f32 = match self.reputation {
+            5 => 0.95,  // 5% discount for 5-star (customers pay more for reliable service)
+            4 => 0.93,  // 7% discount for 4-star
+            3 => 0.90,  // 10% discount for 3-star
+            2 => 0.87,  // 13% discount for 2-star
+            1 => 0.85,  // 15% discount for 1-star (need deep discounts)
+            _ => 0.85,
         };
         
-        // Apply market demand multiplier to pricing
+        // Apply market demand multiplier
         let demand_multiplier = self.market_conditions.get_demand_multiplier(retailer);
-        let market_bonus = if demand_multiplier > 1.2 {
-            denomination / 8  // High demand = better prices
+        let demand_adjustment = if demand_multiplier > 1.2 {
+            0.02  // High demand = customers pay 2% more
         } else if demand_multiplier < 0.8 {
-            0  // Low demand = no bonus
+            -0.03  // Low demand = customers want 3% more discount
         } else {
-            denomination / 12  // Normal demand = small bonus
+            0.0  // Normal demand = no adjustment
         };
         
-        let offered_price = base_price + reputation_bonus + market_bonus;
+        let final_discount = (discount_percentage + demand_adjustment).clamp(0.80, 0.98);
+        let offered_price = (denomination as f32 * final_discount) as u32;
         
         let deadline_days = 2 + (self.day % 5); // 2-6 days to fulfill
         

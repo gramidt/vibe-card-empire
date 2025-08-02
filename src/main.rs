@@ -137,6 +137,33 @@ enum Screen {
     Settings,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum Season {
+    Spring,   // March-May: Fresh start, moderate demand
+    Summer,   // June-August: Vacation season, travel cards popular
+    Fall,     // September-November: Back to school, tech cards popular
+    Winter,   // December-February: Holiday season, gift cards surge
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct MarketEvent {
+    name: String,
+    description: String,
+    retailer_affected: Option<String>, // None means all retailers
+    price_multiplier: f32,  // 1.0 = normal, 1.5 = 50% more expensive, 0.8 = 20% cheaper
+    demand_multiplier: f32, // Affects order frequency
+    duration_days: u32,
+    remaining_days: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct MarketConditions {
+    current_season: Season,
+    active_events: Vec<MarketEvent>,
+    base_demand_modifier: f32, // Seasonal base modifier
+    next_event_in_days: u32,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct GameData {
     cash: u32,
@@ -149,6 +176,7 @@ struct GameData {
     customer_orders: VecDeque<CustomerOrder>,
     next_order_id: u32,
     analytics: BusinessAnalytics,
+    market_conditions: MarketConditions,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -240,6 +268,225 @@ impl BusinessAnalytics {
     }
 }
 
+impl Season {
+    fn from_day(day: u32) -> Self {
+        // Approximate seasons based on day of year (assuming 90-day seasons)
+        let season_day = (day - 1) % 360; // 360-day year for simplicity
+        match season_day {
+            0..=89 => Season::Spring,
+            90..=179 => Season::Summer, 
+            180..=269 => Season::Fall,
+            270..=359 => Season::Winter,
+            _ => Season::Spring,
+        }
+    }
+
+    fn display(&self) -> &str {
+        match self {
+            Season::Spring => "Spring",
+            Season::Summer => "Summer", 
+            Season::Fall => "Fall",
+            Season::Winter => "Winter",
+        }
+    }
+
+    fn demand_modifier(&self) -> f32 {
+        match self {
+            Season::Spring => 1.0,  // Normal demand
+            Season::Summer => 1.1,  // Slightly higher (vacation)
+            Season::Fall => 0.9,    // Slightly lower (back to school)
+            Season::Winter => 1.4,  // Much higher (holidays)
+        }
+    }
+
+    fn retailer_bonus(&self, retailer: &str) -> f32 {
+        match (self, retailer) {
+            (Season::Summer, "Target") => 1.2,     // Summer vacation shopping
+            (Season::Summer, "Walmart") => 1.1,   // General summer demand
+            (Season::Fall, "iTunes") => 1.3,      // Back to school tech
+            (Season::Fall, "Amazon") => 1.2,      // Online shopping increase
+            (Season::Winter, "Amazon") => 1.5,    // Holiday online shopping
+            (Season::Winter, "Starbucks") => 1.3, // Holiday coffee gifts
+            (Season::Winter, "iTunes") => 1.4,    // Holiday tech gifts
+            (Season::Winter, _) => 1.2,           // General holiday boost
+            _ => 1.0,
+        }
+    }
+}
+
+impl MarketEvent {
+    fn new(name: &str, description: &str, retailer: Option<&str>, price_mult: f32, demand_mult: f32, duration: u32) -> Self {
+        Self {
+            name: name.to_string(),
+            description: description.to_string(),
+            retailer_affected: retailer.map(|s| s.to_string()),
+            price_multiplier: price_mult,
+            demand_multiplier: demand_mult,
+            duration_days: duration,
+            remaining_days: duration,
+        }
+    }
+
+    fn is_expired(&self) -> bool {
+        self.remaining_days == 0
+    }
+
+    fn affects_retailer(&self, retailer: &str) -> bool {
+        self.retailer_affected.as_ref().map_or(true, |r| r == retailer)
+    }
+}
+
+impl MarketConditions {
+    fn new() -> Self {
+        Self {
+            current_season: Season::Spring,
+            active_events: Vec::new(),
+            base_demand_modifier: 1.0,
+            next_event_in_days: 3 + (1 % 7), // Next event in 3-9 days
+        }
+    }
+
+    fn update_season(&mut self, day: u32) {
+        let new_season = Season::from_day(day);
+        if !matches!((&self.current_season, &new_season), 
+            (Season::Spring, Season::Spring) | 
+            (Season::Summer, Season::Summer) | 
+            (Season::Fall, Season::Fall) | 
+            (Season::Winter, Season::Winter)) {
+            // Season changed
+            self.current_season = new_season;
+            self.base_demand_modifier = self.current_season.demand_modifier();
+        }
+    }
+
+    fn process_daily_events(&mut self, day: u32, activities: &mut Vec<String>) {
+        // Age existing events
+        self.active_events.retain_mut(|event| {
+            if event.remaining_days > 0 {
+                event.remaining_days -= 1;
+                true
+            } else {
+                activities.insert(0, format!("📈 Market event '{}' has ended", event.name));
+                false
+            }
+        });
+
+        // Check for new events
+        if self.next_event_in_days > 0 {
+            self.next_event_in_days -= 1;
+        } else {
+            self.generate_random_event(day, activities);
+            self.next_event_in_days = 5 + (day % 10); // Next event in 5-14 days
+        }
+    }
+
+    fn generate_random_event(&mut self, day: u32, activities: &mut Vec<String>) {
+        let event_type = day % 8; // 8 different event types
+        
+        let event = match event_type {
+            0 => MarketEvent::new(
+                "Tech Surge", 
+                "New gadget releases drive tech gift card demand",
+                Some("iTunes"),
+                0.9, // 10% cheaper to buy
+                1.5, // 50% more demand
+                4
+            ),
+            1 => MarketEvent::new(
+                "Coffee Festival",
+                "Local coffee festival increases Starbucks popularity", 
+                Some("Starbucks"),
+                1.1, // 10% more expensive
+                1.8, // 80% more demand
+                3
+            ),
+            2 => MarketEvent::new(
+                "Supply Chain Issues",
+                "Logistics problems affect all retailers",
+                None,
+                1.3, // 30% more expensive
+                0.7, // 30% less demand
+                5
+            ),
+            3 => MarketEvent::new(
+                "Amazon Prime Day",
+                "Special Amazon promotion increases demand",
+                Some("Amazon"),
+                0.85, // 15% cheaper
+                2.0, // 100% more demand
+                2
+            ),
+            4 => MarketEvent::new(
+                "Back to School",
+                "Students need supplies, Target benefits",
+                Some("Target"),
+                1.05, // 5% more expensive
+                1.4, // 40% more demand
+                7
+            ),
+            5 => MarketEvent::new(
+                "Economic Downturn",
+                "Customers tighten budgets, demand drops",
+                None,
+                1.0, // Same price
+                0.6, // 40% less demand
+                6
+            ),
+            6 => MarketEvent::new(
+                "Walmart Expansion",
+                "New Walmart stores increase accessibility",
+                Some("Walmart"),
+                0.95, // 5% cheaper
+                1.3, // 30% more demand
+                4
+            ),
+            _ => MarketEvent::new(
+                "Market Boom",
+                "General economic growth benefits all retailers",
+                None,
+                0.9, // 10% cheaper
+                1.2, // 20% more demand
+                5
+            ),
+        };
+
+        activities.insert(0, format!("🎯 New market event: {}", event.name));
+        self.active_events.push(event);
+    }
+
+    fn get_price_multiplier(&self, retailer: &str) -> f32 {
+        let mut multiplier = 1.0;
+        
+        // Apply seasonal bonus
+        multiplier *= self.current_season.retailer_bonus(retailer);
+        
+        // Apply active events
+        for event in &self.active_events {
+            if event.affects_retailer(retailer) {
+                multiplier *= event.price_multiplier;
+            }
+        }
+        
+        multiplier
+    }
+
+    fn get_demand_multiplier(&self, retailer: &str) -> f32 {
+        let mut multiplier = self.base_demand_modifier;
+        
+        // Apply seasonal bonus for demand
+        multiplier *= self.current_season.retailer_bonus(retailer);
+        
+        // Apply active events
+        for event in &self.active_events {
+            if event.affects_retailer(retailer) {
+                multiplier *= event.demand_multiplier;
+            }
+        }
+        
+        multiplier
+    }
+}
+
 impl GameData {
     fn new() -> Self {
         // Create some sample inventory for testing
@@ -281,6 +528,7 @@ impl GameData {
             customer_orders: VecDeque::new(),
             next_order_id: 1000,
             analytics: BusinessAnalytics::new(),
+            market_conditions: MarketConditions::new(),
         };
 
         // Generate some initial customer orders
@@ -349,8 +597,13 @@ impl GameData {
         // Start new day in analytics
         self.analytics.start_new_day();
 
+        // Update market conditions and process events
+        self.market_conditions.update_season(self.day);
+        self.market_conditions.process_daily_events(self.day, &mut self.recent_activities);
+
         // Add daily startup message
-        self.recent_activities.insert(0, format!("🌅 Day {} begins", self.day));
+        let season = self.market_conditions.current_season.display();
+        self.recent_activities.insert(0, format!("🌅 Day {} begins ({} season)", self.day, season));
         if self.recent_activities.len() > 10 {
             self.recent_activities.truncate(10);
         }
@@ -450,7 +703,17 @@ impl GameData {
             _ => 0,
         };
         
-        let offered_price = base_price + reputation_bonus;
+        // Apply market demand multiplier to pricing
+        let demand_multiplier = self.market_conditions.get_demand_multiplier(retailer);
+        let market_bonus = if demand_multiplier > 1.2 {
+            denomination / 8  // High demand = better prices
+        } else if demand_multiplier < 0.8 {
+            0  // Low demand = no bonus
+        } else {
+            denomination / 12  // Normal demand = small bonus
+        };
+        
+        let offered_price = base_price + reputation_bonus + market_bonus;
         
         let deadline_days = 2 + (self.day % 5); // 2-6 days to fulfill
         
@@ -525,9 +788,9 @@ impl GameData {
             }
         }
 
-        // Generate new orders based on reputation
+        // Generate new orders based on reputation and market conditions
         // Higher reputation = more frequent orders
-        let order_chance = match self.reputation {
+        let base_order_chance = match self.reputation {
             5 => self.day % 2 == 0,   // Every other day
             4 => self.day % 3 == 0,   // Every 3 days
             3 => self.day % 3 == 0,   // Every 3 days (default)
@@ -535,6 +798,10 @@ impl GameData {
             1 => self.day % 5 == 0,   // Every 5 days
             _ => false,
         };
+        
+        // Apply market demand modifier
+        let market_boost = self.market_conditions.base_demand_modifier > 1.0;
+        let order_chance = base_order_chance || (market_boost && self.day % 4 == 0);
         
         if order_chance {
             self.generate_random_order();
@@ -737,14 +1004,23 @@ impl App {
             return;
         }
 
-        // Market items (matches the display in draw_market)
-        let market_items = vec![
-            ("Amazon", 25, 20, 50),     // (retailer, value, cost, stock)
+        // Base market items with dynamic pricing
+        let base_market_items = vec![
+            ("Amazon", 25, 20, 50),     // (retailer, value, base_cost, stock)
             ("Starbucks", 10, 8, 30),
             ("Target", 50, 42, 15),
             ("iTunes", 15, 12, 25),
             ("Walmart", 20, 17, 40),
         ];
+        
+        // Apply market conditions to get actual prices
+        let market_items: Vec<(&str, u32, u32, u32)> = base_market_items.iter()
+            .map(|(retailer, value, base_cost, stock)| {
+                let price_multiplier = self.game_data.market_conditions.get_price_multiplier(retailer);
+                let actual_cost = (*base_cost as f32 * price_multiplier).round() as u32;
+                (*retailer, *value, actual_cost, *stock)
+            })
+            .collect();
 
         if let Some((retailer, denomination, cost, _stock)) = market_items.get(self.selected_menu_item) {
             let purchase_cost = *cost;
@@ -1118,14 +1394,24 @@ fn draw_dashboard(f: &mut Frame, app: &App) {
         ])
         .split(size);
 
-    // Header with game stats
+    // Header with game stats including season
+    let season = app.game_data.market_conditions.current_season.display();
+    let active_events = app.game_data.market_conditions.active_events.len();
+    let events_info = if active_events > 0 {
+        format!(" • {} events", active_events)
+    } else {
+        String::new()
+    };
+    
     let header_text = format!(
-        "Cash: ${}    Rep: {} ({})    Day: {}    Time: {}",
+        "Cash: ${}    Rep: {} ({})    Day: {}    Time: {}    Season: {}{}",
         app.game_data.cash,
         app.game_data.reputation_stars(),
         app.game_data.reputation_description(),
         app.game_data.day,
-        app.game_data.time_display()
+        app.game_data.time_display(),
+        season,
+        events_info
     );
     
     let header = Paragraph::new(header_text)
@@ -1243,28 +1529,43 @@ fn draw_market(f: &mut Frame, app: &App) {
     
     f.render_widget(header, chunks[0]);
 
-    // Market items table
-    let market_items = vec![
-        ("Amazon", 25, 20, 50),     // (retailer, value, cost, stock)
+    // Market items table with dynamic pricing
+    let base_market_items = vec![
+        ("Amazon", 25, 20, 50),     // (retailer, value, base_cost, stock)
         ("Starbucks", 10, 8, 30),
         ("Target", 50, 42, 15),
         ("iTunes", 15, 12, 25),
         ("Walmart", 20, 17, 40),
     ];
+    
+    let market_items: Vec<(String, u32, u32, u32, String)> = base_market_items.iter()
+        .map(|(retailer, value, base_cost, stock)| {
+            let price_multiplier = app.game_data.market_conditions.get_price_multiplier(retailer);
+            let actual_cost = (*base_cost as f32 * price_multiplier).round() as u32;
+            let trend = if price_multiplier > 1.1 {
+                "↗".to_string() // Rising
+            } else if price_multiplier < 0.9 {
+                "↘".to_string() // Falling  
+            } else {
+                "→".to_string() // Stable
+            };
+            (retailer.to_string(), *value, actual_cost, *stock, trend)
+        })
+        .collect();
 
     // Create table header and rows
     let mut table_content = vec![
-        "Retailer    │ Value │ Cost │ Stock │ Profit".to_string(),
-        "────────────┼───────┼──────┼───────┼───────".to_string(),
+        "Retailer    │ Value │ Cost │ Stock │ Profit │ Trend".to_string(),
+        "────────────┼───────┼──────┼───────┼────────┼──────".to_string(),
     ];
 
-    for (i, (retailer, value, cost, stock)) in market_items.iter().enumerate() {
+    for (i, (retailer, value, cost, stock, trend)) in market_items.iter().enumerate() {
         let profit = value - cost;
         let style_char = if i == app.selected_menu_item { "►" } else { " " };
         
         table_content.push(format!(
-            "{} {:10} │  ${:2} │ ${:2} │  {:2}+  │ +${:2}",
-            style_char, retailer, value, cost, stock, profit
+            "{} {:10} │  ${:2} │ ${:2} │  {:2}+  │ +${:2}   │  {}",
+            style_char, retailer, value, cost, stock, profit, trend
         ));
     }
 
@@ -2086,5 +2387,47 @@ mod tests {
         // Clean up test file
         let _ = fs::remove_file(test_filename);
         assert!(!GameData::save_file_exists(test_filename));
+    }
+
+    #[test]
+    fn test_seasonal_market_system() {
+        let mut game_data = GameData::new();
+        
+        // Test season progression
+        assert!(matches!(game_data.market_conditions.current_season, Season::Spring));
+        
+        // Test season changes
+        game_data.market_conditions.update_season(100); // Should be Summer
+        assert!(matches!(game_data.market_conditions.current_season, Season::Summer));
+        
+        game_data.market_conditions.update_season(200); // Should be Fall
+        assert!(matches!(game_data.market_conditions.current_season, Season::Fall));
+        
+        game_data.market_conditions.update_season(300); // Should be Winter
+        assert!(matches!(game_data.market_conditions.current_season, Season::Winter));
+        
+        // Test price multipliers
+        let amazon_multiplier = game_data.market_conditions.get_price_multiplier("Amazon");
+        assert!(amazon_multiplier > 1.0); // Winter should boost Amazon
+        
+        let starbucks_multiplier = game_data.market_conditions.get_price_multiplier("Starbucks"); 
+        assert!(starbucks_multiplier > 1.0); // Winter should boost Starbucks
+        
+        // Test demand multipliers
+        let demand_multiplier = game_data.market_conditions.get_demand_multiplier("Amazon");
+        assert!(demand_multiplier > 1.0); // Winter should increase demand
+        
+        // Test market event creation
+        let initial_events = game_data.market_conditions.active_events.len();
+        game_data.market_conditions.generate_random_event(42, &mut game_data.recent_activities);
+        assert_eq!(game_data.market_conditions.active_events.len(), initial_events + 1);
+        
+        // Test event affects pricing
+        let event = &game_data.market_conditions.active_events[0];
+        if let Some(retailer) = &event.retailer_affected {
+            let multiplier = game_data.market_conditions.get_price_multiplier(retailer);
+            // Should be different from base price due to event
+            assert_ne!(multiplier, 1.5); // 1.5 is winter Amazon base
+        }
     }
 }

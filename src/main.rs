@@ -11,7 +11,8 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, Paragraph},
     Frame, Terminal,
 };
-use std::{error::Error, io};
+use std::{error::Error, io, time::{Duration, Instant}};
+use std::collections::VecDeque;
 
 #[derive(Debug, Clone)]
 struct GiftCard {
@@ -73,6 +74,58 @@ impl InventoryItem {
 }
 
 #[derive(Debug, Clone)]
+struct CustomerOrder {
+    id: u32,
+    customer_name: String,
+    retailer: String,
+    denomination: u32,
+    quantity: u32,
+    offered_price_per_card: u32,
+    deadline_days: u32,
+    priority: OrderPriority,
+}
+
+#[derive(Debug, Clone)]
+enum OrderPriority {
+    Low,
+    Medium, 
+    High,
+}
+
+impl OrderPriority {
+    fn display(&self) -> &str {
+        match self {
+            OrderPriority::Low => "Low",
+            OrderPriority::Medium => "Medium", 
+            OrderPriority::High => "High",
+        }
+    }
+}
+
+impl CustomerOrder {
+    fn new(id: u32, customer_name: &str, retailer: &str, denomination: u32, quantity: u32, offered_price_per_card: u32, deadline_days: u32, priority: OrderPriority) -> Self {
+        Self {
+            id,
+            customer_name: customer_name.to_string(),
+            retailer: retailer.to_string(),
+            denomination,
+            quantity,
+            offered_price_per_card,
+            deadline_days,
+            priority,
+        }
+    }
+
+    fn total_offered(&self) -> u32 {
+        self.offered_price_per_card * self.quantity
+    }
+
+    fn is_expired(&self) -> bool {
+        self.deadline_days == 0
+    }
+}
+
+#[derive(Debug, Clone)]
 enum Screen {
     MainMenu,
     Dashboard,
@@ -92,6 +145,8 @@ struct GameData {
     minute: u8,
     recent_activities: Vec<String>,
     inventory: Vec<InventoryItem>,
+    customer_orders: VecDeque<CustomerOrder>,
+    next_order_id: u32,
 }
 
 impl GameData {
@@ -120,7 +175,7 @@ impl GameData {
             ),
         ];
 
-        Self {
+        let mut game_data = Self {
             cash: 5000,
             reputation: 3,
             day: 1,
@@ -132,6 +187,74 @@ impl GameData {
                 "Visit the Market to buy your first cards".to_string(),
             ],
             inventory: sample_inventory,
+            customer_orders: VecDeque::new(),
+            next_order_id: 1000,
+        };
+
+        // Generate some initial customer orders
+        game_data.generate_random_order();
+        game_data.generate_random_order();
+        
+        game_data
+    }
+
+    fn advance_time(&mut self, minutes: u8) {
+        self.minute += minutes;
+        if self.minute >= 60 {
+            self.hour += self.minute / 60;
+            self.minute = self.minute % 60;
+        }
+        
+        if self.hour >= 24 {
+            self.day += (self.hour / 24) as u32;
+            self.hour = self.hour % 24;
+            
+            // Process daily events when a new day starts
+            self.process_daily_events();
+        }
+    }
+
+    fn process_daily_events(&mut self) {
+        // Age all inventory by 1 day
+        for item in &mut self.inventory {
+            if item.card.days_until_expiration > 0 {
+                item.card.days_until_expiration -= 1;
+            }
+        }
+
+        // Remove expired cards and calculate losses
+        let mut expired_value = 0;
+        let mut expired_count = 0;
+        
+        self.inventory.retain(|item| {
+            if item.card.days_until_expiration == 0 {
+                expired_value += item.total_cost();
+                expired_count += item.quantity;
+                false
+            } else {
+                true
+            }
+        });
+
+        if expired_count > 0 {
+            self.recent_activities.insert(0, format!(
+                "❌ Lost {} cards worth ${} to expiration", 
+                expired_count, expired_value
+            ));
+            
+            // Keep only the last 10 activities
+            if self.recent_activities.len() > 10 {
+                self.recent_activities.truncate(10);
+            }
+        }
+
+        // Process customer orders aging
+        self.process_order_aging();
+
+        // Add daily startup message
+        self.recent_activities.insert(0, format!("🌅 Day {} begins", self.day));
+        if self.recent_activities.len() > 10 {
+            self.recent_activities.truncate(10);
         }
     }
 
@@ -162,6 +285,121 @@ impl GameData {
     fn expiring_items_count(&self) -> usize {
         self.inventory.iter().filter(|item| item.card.is_expiring_soon()).count()
     }
+
+    fn add_to_inventory(&mut self, card: GiftCard, quantity: u32) {
+        // Check if we already have this type of card
+        for item in &mut self.inventory {
+            if item.card.retailer == card.retailer && 
+               item.card.denomination == card.denomination &&
+               item.card.purchase_price == card.purchase_price {
+                item.quantity += quantity;
+                return;
+            }
+        }
+        
+        // Add new inventory item if not found
+        self.inventory.push(InventoryItem::new(card, quantity));
+    }
+
+    fn can_afford(&self, cost: u32) -> bool {
+        self.cash >= cost
+    }
+
+    fn spend_money(&mut self, amount: u32) -> bool {
+        if self.can_afford(amount) {
+            self.cash -= amount;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn generate_random_order(&mut self) {
+        let retailers = ["Amazon", "Starbucks", "Target", "iTunes", "Walmart"];
+        let denominations = [10, 15, 20, 25, 50];
+        let customer_names = ["Alice", "Bob", "Charlie", "Diana", "Eve", "Frank", "Grace", "Henry"];
+        
+        // Simple randomization based on current time/day
+        let retailer_idx = (self.day + self.hour as u32) % retailers.len() as u32;
+        let denom_idx = (self.day * 2 + self.minute as u32) % denominations.len() as u32;
+        let customer_idx = (self.next_order_id + self.day) % customer_names.len() as u32;
+        
+        let retailer = retailers[retailer_idx as usize];
+        let denomination = denominations[denom_idx as usize];
+        let customer_name = customer_names[customer_idx as usize];
+        
+        let quantity = 1 + (self.day % 5); // 1-5 cards
+        let base_price = denomination + 2; // Small markup from wholesale
+        let offered_price = base_price + (self.reputation as u32 * 2); // Better customers pay more for good reputation
+        
+        let deadline_days = 2 + (self.day % 5); // 2-6 days to fulfill
+        
+        // Priority based on offer amount
+        let priority = if offered_price >= denomination + 8 {
+            OrderPriority::High
+        } else if offered_price >= denomination + 5 {
+            OrderPriority::Medium
+        } else {
+            OrderPriority::Low
+        };
+
+        let order = CustomerOrder::new(
+            self.next_order_id,
+            customer_name,
+            retailer,
+            denomination,
+            quantity,
+            offered_price,
+            deadline_days,
+            priority,
+        );
+
+        self.customer_orders.push_back(order);
+        self.next_order_id += 1;
+
+        // Add notification
+        self.recent_activities.insert(0, format!(
+            "📋 New order: {} wants {} {} ${} cards",
+            customer_name, quantity, retailer, denomination
+        ));
+        if self.recent_activities.len() > 10 {
+            self.recent_activities.truncate(10);
+        }
+    }
+
+    fn process_order_aging(&mut self) {
+        // Age all orders by 1 day
+        for order in &mut self.customer_orders {
+            if order.deadline_days > 0 {
+                order.deadline_days -= 1;
+            }
+        }
+
+        // Remove expired orders
+        let mut expired_count = 0;
+        self.customer_orders.retain(|order| {
+            if order.is_expired() {
+                expired_count += 1;
+                false
+            } else {
+                true
+            }
+        });
+
+        if expired_count > 0 {
+            self.recent_activities.insert(0, format!(
+                "⏰ {} customer orders expired", expired_count
+            ));
+            if self.recent_activities.len() > 10 {
+                self.recent_activities.truncate(10);
+            }
+        }
+
+        // Randomly generate new orders (30% chance per day)
+        if self.day % 3 == 0 {
+            self.generate_random_order();
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -170,6 +408,9 @@ struct App {
     selected_menu_item: usize,
     should_quit: bool,
     game_data: GameData,
+    last_time_update: Instant,
+    game_speed: Duration, // How often to advance time
+    paused: bool,
 }
 
 impl App {
@@ -179,6 +420,81 @@ impl App {
             selected_menu_item: 0,
             should_quit: false,
             game_data: GameData::new(),
+            last_time_update: Instant::now(),
+            game_speed: Duration::from_secs(3), // Advance 10 minutes every 3 seconds
+            paused: false,
+        }
+    }
+
+    fn update_time(&mut self) {
+        if self.paused || matches!(self.screen, Screen::MainMenu) {
+            return;
+        }
+
+        let now = Instant::now();
+        if now.duration_since(self.last_time_update) >= self.game_speed {
+            self.game_data.advance_time(10); // Advance 10 minutes
+            self.last_time_update = now;
+        }
+    }
+
+    fn toggle_pause(&mut self) {
+        if !matches!(self.screen, Screen::MainMenu) {
+            self.paused = !self.paused;
+            let status = if self.paused { "⏸️ Paused" } else { "▶️ Resumed" };
+            self.game_data.recent_activities.insert(0, status.to_string());
+            if self.game_data.recent_activities.len() > 10 {
+                self.game_data.recent_activities.truncate(10);
+            }
+        }
+    }
+
+    fn purchase_from_market(&mut self) {
+        if !matches!(self.screen, Screen::Market) {
+            return;
+        }
+
+        // Market items (matches the display in draw_market)
+        let market_items = vec![
+            ("Amazon", 25, 20, 50),     // (retailer, value, cost, stock)
+            ("Starbucks", 10, 8, 30),
+            ("Target", 50, 42, 15),
+            ("iTunes", 15, 12, 25),
+            ("Walmart", 20, 17, 40),
+        ];
+
+        if let Some((retailer, denomination, cost, _stock)) = market_items.get(self.selected_menu_item) {
+            let purchase_cost = *cost;
+            
+            if self.game_data.can_afford(purchase_cost) {
+                if self.game_data.spend_money(purchase_cost) {
+                    // Create the gift card with random expiration (30-90 days)
+                    let expiration_days = 30 + (self.game_data.day % 60); // Simple randomization
+                    let card = GiftCard::new(retailer, *denomination, *cost, expiration_days);
+                    
+                    self.game_data.add_to_inventory(card, 1);
+                    
+                    // Add activity log
+                    let activity = format!(
+                        "💰 Purchased {} ${} card for ${}", 
+                        retailer, denomination, cost
+                    );
+                    self.game_data.recent_activities.insert(0, activity);
+                    if self.game_data.recent_activities.len() > 10 {
+                        self.game_data.recent_activities.truncate(10);
+                    }
+                }
+            } else {
+                // Not enough money
+                let activity = format!(
+                    "❌ Insufficient funds for {} ${} (need ${})", 
+                    retailer, denomination, cost
+                );
+                self.game_data.recent_activities.insert(0, activity);
+                if self.game_data.recent_activities.len() > 10 {
+                    self.game_data.recent_activities.truncate(10);
+                }
+            }
         }
     }
 
@@ -187,6 +503,7 @@ impl App {
             Screen::MainMenu => 4, // New Game, Continue, Tutorial, Quit
             Screen::Dashboard => 6, // Market, Orders, Inventory, Analytics, Settings, Save & Quit
             Screen::Market => 5, // 5 market items
+            Screen::Orders => self.game_data.customer_orders.len().max(1), // Number of orders
             _ => 1, // Other screens typically have minimal navigation
         };
         self.selected_menu_item = (self.selected_menu_item + 1) % menu_items;
@@ -197,6 +514,7 @@ impl App {
             Screen::MainMenu => 4,
             Screen::Dashboard => 6,
             Screen::Market => 5,
+            Screen::Orders => self.game_data.customer_orders.len().max(1),
             _ => 1,
         };
         if self.selected_menu_item > 0 {
@@ -207,6 +525,8 @@ impl App {
     }
 
     fn select_menu_item(&mut self) {
+        let previous_screen = self.screen.clone();
+        
         match self.screen {
             Screen::MainMenu => {
                 match self.selected_menu_item {
@@ -228,12 +548,21 @@ impl App {
                     _ => {}
                 }
             }
+            Screen::Market => {
+                // Purchase item from market (stay on market screen)
+                self.purchase_from_market();
+                return; // Don't reset selection
+            }
             _ => {
                 // Other screens return to dashboard
                 self.screen = Screen::Dashboard;
             }
         }
-        self.selected_menu_item = 0; // Reset selection when changing screens
+        
+        // Reset selection when changing screens
+        if !matches!((previous_screen, &self.screen), (Screen::Market, Screen::Market)) {
+            self.selected_menu_item = 0;
+        }
     }
 
     fn go_back(&mut self) {
@@ -276,41 +605,48 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Result<()> {
     loop {
+        // Update game time
+        app.update_time();
+        
         terminal.draw(|f| ui(f, &app))?;
 
-        if let Event::Key(key) = event::read()? {
-            match key.code {
-                KeyCode::Char('q') => return Ok(()),
-                KeyCode::Esc => app.go_back(),
-                KeyCode::Down => app.next_menu_item(),
-                KeyCode::Up => app.previous_menu_item(),
-                KeyCode::Enter => app.select_menu_item(),
-                // Number key quick access for dashboard
-                KeyCode::Char('1') if matches!(app.screen, Screen::Dashboard) => {
-                    app.selected_menu_item = 0;
-                    app.select_menu_item();
-                },
-                KeyCode::Char('2') if matches!(app.screen, Screen::Dashboard) => {
-                    app.selected_menu_item = 1;
-                    app.select_menu_item();
-                },
-                KeyCode::Char('3') if matches!(app.screen, Screen::Dashboard) => {
-                    app.selected_menu_item = 2;
-                    app.select_menu_item();
-                },
-                KeyCode::Char('4') if matches!(app.screen, Screen::Dashboard) => {
-                    app.selected_menu_item = 3;
-                    app.select_menu_item();
-                },
-                KeyCode::Char('5') if matches!(app.screen, Screen::Dashboard) => {
-                    app.selected_menu_item = 4;
-                    app.select_menu_item();
-                },
-                KeyCode::Char('6') if matches!(app.screen, Screen::Dashboard) => {
-                    app.selected_menu_item = 5;
-                    app.select_menu_item();
-                },
-                _ => {}
+        // Use poll instead of read to avoid blocking
+        if event::poll(Duration::from_millis(100))? {
+            if let Event::Key(key) = event::read()? {
+                match key.code {
+                    KeyCode::Char('q') => return Ok(()),
+                    KeyCode::Esc => app.go_back(),
+                    KeyCode::Down => app.next_menu_item(),
+                    KeyCode::Up => app.previous_menu_item(),
+                    KeyCode::Enter => app.select_menu_item(),
+                    KeyCode::Char(' ') => app.toggle_pause(), // Spacebar to pause
+                    // Number key quick access for dashboard
+                    KeyCode::Char('1') if matches!(app.screen, Screen::Dashboard) => {
+                        app.selected_menu_item = 0;
+                        app.select_menu_item();
+                    },
+                    KeyCode::Char('2') if matches!(app.screen, Screen::Dashboard) => {
+                        app.selected_menu_item = 1;
+                        app.select_menu_item();
+                    },
+                    KeyCode::Char('3') if matches!(app.screen, Screen::Dashboard) => {
+                        app.selected_menu_item = 2;
+                        app.select_menu_item();
+                    },
+                    KeyCode::Char('4') if matches!(app.screen, Screen::Dashboard) => {
+                        app.selected_menu_item = 3;
+                        app.select_menu_item();
+                    },
+                    KeyCode::Char('5') if matches!(app.screen, Screen::Dashboard) => {
+                        app.selected_menu_item = 4;
+                        app.select_menu_item();
+                    },
+                    KeyCode::Char('6') if matches!(app.screen, Screen::Dashboard) => {
+                        app.selected_menu_item = 5;
+                        app.select_menu_item();
+                    },
+                    _ => {}
+                }
             }
         }
 
@@ -325,7 +661,7 @@ fn ui(f: &mut Frame, app: &App) {
         Screen::MainMenu => draw_main_menu(f, app),
         Screen::Dashboard => draw_dashboard(f, app),
         Screen::Market => draw_market(f, app),
-        Screen::Orders => draw_placeholder(f, "Customer Orders", "Manage customer requests"),
+        Screen::Orders => draw_orders(f, app),
         Screen::Inventory => draw_placeholder(f, "Inventory", "View your gift card stock"),
         Screen::Analytics => draw_placeholder(f, "Analytics", "Business metrics and trends"),
         Screen::Settings => draw_placeholder(f, "Settings", "Game configuration"),
@@ -481,8 +817,12 @@ fn draw_dashboard(f: &mut Frame, app: &App) {
 
     f.render_widget(activity_list, main_chunks[1]);
 
-    // Footer with controls
-    let footer_text = "↑↓ Navigate  Enter Select  [1-6] Quick Access  Esc Back  Q Quit";
+    // Footer with controls and pause status
+    let pause_indicator = if app.paused { " ⏸️ PAUSED" } else { "" };
+    let footer_text = format!(
+        "↑↓ Navigate  Enter Select  [1-6] Quick Access  Space Pause  Esc Back  Q Quit{}",
+        pause_indicator
+    );
     let footer = Paragraph::new(footer_text)
         .block(Block::default()
             .borders(Borders::ALL)
@@ -569,7 +909,111 @@ fn draw_market(f: &mut Frame, app: &App) {
     f.render_widget(market_list, chunks[1]);
 
     // Footer with controls
-    let footer_text = "↑↓ Select  Enter Purchase (Coming Soon)  Esc Back";
+    let footer_text = "↑↓ Select  Enter Purchase  Esc Back";
+    let footer = Paragraph::new(footer_text)
+        .block(Block::default()
+            .borders(Borders::ALL)
+            .style(Style::default().fg(Color::White)))
+        .style(Style::default().fg(Color::Gray))
+        .alignment(Alignment::Center);
+
+    f.render_widget(footer, chunks[2]);
+}
+
+fn draw_orders(f: &mut Frame, app: &App) {
+    let size = f.area();
+    
+    // Create layout: Header, Orders list, Footer
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // Header
+            Constraint::Min(0),    // Orders content
+            Constraint::Length(3), // Footer
+        ])
+        .split(size);
+
+    // Header
+    let header_text = format!("Active Orders: {}", app.game_data.customer_orders.len());
+    let header = Paragraph::new(header_text)
+        .block(Block::default()
+            .title("Customer Orders")
+            .borders(Borders::ALL)
+            .style(Style::default().fg(Color::White)))
+        .style(Style::default().fg(Color::Green))
+        .alignment(Alignment::Center);
+    
+    f.render_widget(header, chunks[0]);
+
+    // Orders list
+    if app.game_data.customer_orders.is_empty() {
+        let no_orders = Paragraph::new("No customer orders available\n\nNew orders will appear over time")
+            .block(Block::default()
+                .title("Orders")
+                .borders(Borders::ALL)
+                .style(Style::default().fg(Color::White)))
+            .style(Style::default().fg(Color::Gray))
+            .alignment(Alignment::Center);
+        
+        f.render_widget(no_orders, chunks[1]);
+    } else {
+        // Create table header and rows
+        let mut table_content = vec![
+            "Order #  │ Customer │ Item           │ Qty │ Offer │ Days │ Priority".to_string(),
+            "─────────┼──────────┼────────────────┼─────┼───────┼──────┼────────".to_string(),
+        ];
+
+        for (i, order) in app.game_data.customer_orders.iter().enumerate() {
+            let style_char = if i == app.selected_menu_item { "►" } else { " " };
+            let priority_color = match order.priority {
+                OrderPriority::High => "🔴",
+                OrderPriority::Medium => "🟡", 
+                OrderPriority::Low => "🟢",
+            };
+            
+            table_content.push(format!(
+                "{} #{:4}   │ {:8} │ {} ${:2}      │  {:2} │ ${:3}  │  {:2}  │ {} {}",
+                style_char,
+                order.id,
+                order.customer_name,
+                order.retailer,
+                order.denomination,
+                order.quantity,
+                order.offered_price_per_card,
+                order.deadline_days,
+                priority_color,
+                order.priority.display()
+            ));
+        }
+
+        let table_items: Vec<ListItem> = table_content
+            .iter()
+            .enumerate()
+            .map(|(i, line)| {
+                let style = if i >= 2 && (i - 2) == app.selected_menu_item {
+                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                } else if i < 2 {
+                    Style::default().fg(Color::Gray)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                
+                ListItem::new(Line::from(Span::styled(line.clone(), style)))
+            })
+            .collect();
+
+        let orders_list = List::new(table_items)
+            .block(Block::default()
+                .title("Available Orders")
+                .borders(Borders::ALL)
+                .style(Style::default().fg(Color::White)))
+            .style(Style::default().fg(Color::White));
+
+        f.render_widget(orders_list, chunks[1]);
+    }
+
+    // Footer with controls
+    let footer_text = "↑↓ Select  Enter Accept (Coming Soon)  Esc Back";
     let footer = Paragraph::new(footer_text)
         .block(Block::default()
             .borders(Borders::ALL)

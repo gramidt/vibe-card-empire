@@ -1863,7 +1863,7 @@ impl App {
             should_quit: false,
             game_data: GameData::new(),
             last_time_update: Instant::now(),
-            game_speed: Duration::from_secs(3), // Advance 10 minutes every 3 seconds
+            game_speed: Duration::from_secs(1), // Advance 20 minutes every 1 second
             paused: false,
             sound_effects: SoundEffects::new(),
         }
@@ -1876,7 +1876,7 @@ impl App {
 
         let now = Instant::now();
         if now.duration_since(self.last_time_update) >= self.game_speed {
-            self.game_data.advance_time(10); // Advance 10 minutes
+            self.game_data.advance_time(20); // Advance 20 minutes
             self.last_time_update = now;
         }
     }

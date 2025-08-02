@@ -11,10 +11,11 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, Paragraph},
     Frame, Terminal,
 };
-use std::{error::Error, io, time::{Duration, Instant}};
+use std::{error::Error, io, time::{Duration, Instant}, fs};
 use std::collections::VecDeque;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct GiftCard {
     retailer: String,
     denomination: u32,
@@ -53,7 +54,7 @@ impl GiftCard {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct InventoryItem {
     card: GiftCard,
     quantity: u32,
@@ -73,7 +74,7 @@ impl InventoryItem {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct CustomerOrder {
     id: u32,
     customer_name: String,
@@ -85,7 +86,7 @@ struct CustomerOrder {
     priority: OrderPriority,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 enum OrderPriority {
     Low,
     Medium, 
@@ -125,7 +126,7 @@ impl CustomerOrder {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 enum Screen {
     MainMenu,
     Dashboard,
@@ -136,7 +137,7 @@ enum Screen {
     Settings,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 struct GameData {
     cash: u32,
     reputation: u8, // 1-5 stars
@@ -150,7 +151,7 @@ struct GameData {
     analytics: BusinessAnalytics,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 struct BusinessAnalytics {
     total_revenue: u32,
     total_purchases: u32,
@@ -666,6 +667,22 @@ impl GameData {
             }
         }
     }
+
+    fn save_game(&self, filename: &str) -> Result<(), Box<dyn Error>> {
+        let save_data = serde_json::to_string_pretty(self)?;
+        fs::write(filename, save_data)?;
+        Ok(())
+    }
+
+    fn load_game(filename: &str) -> Result<Self, Box<dyn Error>> {
+        let save_data = fs::read_to_string(filename)?;
+        let game_data: GameData = serde_json::from_str(&save_data)?;
+        Ok(game_data)
+    }
+
+    fn save_file_exists(filename: &str) -> bool {
+        std::path::Path::new(filename).exists()
+    }
 }
 
 #[derive(Debug)]
@@ -793,7 +810,7 @@ impl App {
     fn next_menu_item(&mut self) {
         let menu_items = match self.screen {
             Screen::MainMenu => 4, // New Game, Continue, Tutorial, Quit
-            Screen::Dashboard => 6, // Market, Orders, Inventory, Analytics, Settings, Save & Quit
+            Screen::Dashboard => 7, // Market, Orders, Inventory, Analytics, Settings, Save Game, Quit
             Screen::Market => 5, // 5 market items
             Screen::Orders => self.game_data.customer_orders.len().max(1), // Number of orders
             Screen::Inventory => self.game_data.inventory.len().max(1), // Number of inventory items
@@ -805,7 +822,7 @@ impl App {
     fn previous_menu_item(&mut self) {
         let menu_items = match self.screen {
             Screen::MainMenu => 4,
-            Screen::Dashboard => 6,
+            Screen::Dashboard => 7,
             Screen::Market => 5,
             Screen::Orders => self.game_data.customer_orders.len().max(1),
             Screen::Inventory => self.game_data.inventory.len().max(1),
@@ -825,7 +842,12 @@ impl App {
             Screen::MainMenu => {
                 match self.selected_menu_item {
                     0 => self.screen = Screen::Dashboard, // New Game
-                    1 => {}, // Continue (not implemented yet)
+                    1 => { 
+                        // Only load if save file exists
+                        if App::save_file_exists() {
+                            self.load_game(); 
+                        }
+                    }, // Continue Game
                     2 => {}, // Tutorial (not implemented yet)
                     3 => self.should_quit = true, // Quit
                     _ => {}
@@ -838,7 +860,8 @@ impl App {
                     2 => self.screen = Screen::Inventory, // [3] Inventory
                     3 => self.screen = Screen::Analytics, // [4] Analytics
                     4 => self.screen = Screen::Settings,  // [5] Settings
-                    5 => self.screen = Screen::MainMenu,  // [6] Save & Quit
+                    5 => { self.save_game(); },           // [6] Save Game
+                    6 => self.screen = Screen::MainMenu,  // [7] Quit to Menu
                     _ => {}
                 }
             }
@@ -871,6 +894,56 @@ impl App {
             _ => self.screen = Screen::Dashboard,
         }
         self.selected_menu_item = 0;
+    }
+
+    fn save_game(&mut self) -> bool {
+        const SAVE_FILE: &str = "savegame.json";
+        
+        match self.game_data.save_game(SAVE_FILE) {
+            Ok(()) => {
+                self.game_data.recent_activities.insert(0, "💾 Game saved successfully!".to_string());
+                if self.game_data.recent_activities.len() > 10 {
+                    self.game_data.recent_activities.truncate(10);
+                }
+                true
+            }
+            Err(_) => {
+                self.game_data.recent_activities.insert(0, "❌ Failed to save game".to_string());
+                if self.game_data.recent_activities.len() > 10 {
+                    self.game_data.recent_activities.truncate(10);
+                }
+                false
+            }
+        }
+    }
+
+    fn load_game(&mut self) -> bool {
+        const SAVE_FILE: &str = "savegame.json";
+        
+        match GameData::load_game(SAVE_FILE) {
+            Ok(loaded_game_data) => {
+                self.game_data = loaded_game_data;
+                self.game_data.recent_activities.insert(0, "📂 Game loaded successfully!".to_string());
+                if self.game_data.recent_activities.len() > 10 {
+                    self.game_data.recent_activities.truncate(10);
+                }
+                self.screen = Screen::Dashboard;
+                true
+            }
+            Err(_) => {
+                // Create error message in current game_data
+                self.game_data.recent_activities.insert(0, "❌ Failed to load game".to_string());
+                if self.game_data.recent_activities.len() > 10 {
+                    self.game_data.recent_activities.truncate(10);
+                }
+                false
+            }
+        }
+    }
+
+    fn save_file_exists() -> bool {
+        const SAVE_FILE: &str = "savegame.json";
+        GameData::save_file_exists(SAVE_FILE)
     }
 }
 
@@ -944,6 +1017,10 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Result<(
                         app.selected_menu_item = 5;
                         app.select_menu_item();
                     },
+                    KeyCode::Char('7') if matches!(app.screen, Screen::Dashboard) => {
+                        app.selected_menu_item = 6;
+                        app.select_menu_item();
+                    },
                     _ => {}
                 }
             }
@@ -975,9 +1052,16 @@ fn draw_main_menu(f: &mut Frame, app: &App) {
         .borders(Borders::ALL)
         .style(Style::default().fg(Color::White));
 
+    let save_available = App::save_file_exists();
+    let continue_text = if save_available {
+        "Continue Game"
+    } else {
+        "Continue (No save file found)"
+    };
+    
     let menu_items = vec![
         "New Game",
-        "Continue",
+        continue_text,
         "Tutorial", 
         "Quit",
     ];
@@ -1070,7 +1154,8 @@ fn draw_dashboard(f: &mut Frame, app: &App) {
         "[3] Inventory",
         "[4] Analytics",
         "[5] Settings",
-        "[6] Save & Quit",
+        "[6] Save Game",
+        "[7] Quit to Menu",
     ];
 
     let menu_list_items: Vec<ListItem> = menu_items
@@ -1120,7 +1205,7 @@ fn draw_dashboard(f: &mut Frame, app: &App) {
     // Footer with controls and pause status
     let pause_indicator = if app.paused { " ⏸️ PAUSED" } else { "" };
     let footer_text = format!(
-        "↑↓ Navigate  Enter Select  [1-6] Quick Access  Space Pause  Esc Back  Q Quit{}",
+        "↑↓ Navigate  Enter Select  [1-7] Quick Access  Space Pause  Esc Back  Q Quit{}",
         pause_indicator
     );
     let footer = Paragraph::new(footer_text)
@@ -1959,5 +2044,47 @@ mod tests {
         let initial_days = game_data.analytics.daily_revenues.len();
         game_data.analytics.start_new_day();
         assert_eq!(game_data.analytics.daily_revenues.len(), initial_days + 1);
+    }
+
+    #[test]
+    fn test_save_load_functionality() {
+        use std::fs;
+        
+        let test_filename = "test_save.json";
+        
+        // Clean up any existing test file
+        let _ = fs::remove_file(test_filename);
+        
+        // Create test game data
+        let mut original_game_data = GameData::new();
+        original_game_data.cash = 12345;
+        original_game_data.reputation = 4;
+        original_game_data.day = 42;
+        original_game_data.hour = 15;
+        original_game_data.minute = 30;
+        original_game_data.recent_activities.push("Test activity".to_string());
+        
+        // Test save
+        let save_result = original_game_data.save_game(test_filename);
+        assert!(save_result.is_ok());
+        assert!(GameData::save_file_exists(test_filename));
+        
+        // Test load
+        let load_result = GameData::load_game(test_filename);
+        assert!(load_result.is_ok());
+        
+        let loaded_game_data = load_result.unwrap();
+        
+        // Verify data integrity
+        assert_eq!(loaded_game_data.cash, 12345);
+        assert_eq!(loaded_game_data.reputation, 4);
+        assert_eq!(loaded_game_data.day, 42);
+        assert_eq!(loaded_game_data.hour, 15);
+        assert_eq!(loaded_game_data.minute, 30);
+        assert!(loaded_game_data.recent_activities.contains(&"Test activity".to_string()));
+        
+        // Clean up test file
+        let _ = fs::remove_file(test_filename);
+        assert!(!GameData::save_file_exists(test_filename));
     }
 }

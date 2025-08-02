@@ -11,9 +11,107 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, Paragraph, Table, Row, Cell, Wrap},
     Frame, Terminal,
 };
-use std::{error::Error, io, time::{Duration, Instant}, fs};
+use std::{error::Error, io, time::{Duration, Instant}, fs, io::Write};
 use std::collections::VecDeque;
 use serde::{Deserialize, Serialize};
+
+#[derive(Debug)]
+struct SoundEffects {
+    enabled: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum SoundType {
+    Purchase,       // Successful purchase
+    Sale,          // Successful sale/order fulfillment  
+    NewOrder,      // New customer order
+    LevelUp,       // Achievement unlocked
+    Warning,       // Expiration warning
+    Error,         // Failed action
+    RandomEvent,   // Random event appears
+    DayChange,     // New day begins
+    Paused,        // Game paused
+    Navigation,    // Menu navigation (subtle)
+}
+
+impl SoundEffects {
+    fn new() -> Self {
+        Self { enabled: true }
+    }
+    
+    fn play(&self, sound_type: SoundType) {
+        if !self.enabled {
+            return;
+        }
+        
+        // Use terminal bell and escape sequences for different sounds
+        match sound_type {
+            SoundType::Purchase => {
+                // Happy purchase sound - single bell
+                print!("\x07");
+            },
+            SoundType::Sale => {
+                // Success sound - double bell
+                print!("\x07");
+                std::thread::sleep(Duration::from_millis(100));
+                print!("\x07");
+            },
+            SoundType::NewOrder => {
+                // Notification sound - short bell
+                print!("\x07");
+            },
+            SoundType::LevelUp => {
+                // Achievement sound - triple bell
+                for _ in 0..3 {
+                    print!("\x07");
+                    std::thread::sleep(Duration::from_millis(150));
+                }
+            },
+            SoundType::Warning => {
+                // Warning sound - long bell
+                print!("\x07");
+                std::thread::sleep(Duration::from_millis(200));
+                print!("\x07");
+            },
+            SoundType::Error => {
+                // Error sound - quick double bell
+                print!("\x07");
+                std::thread::sleep(Duration::from_millis(50));
+                print!("\x07");
+            },
+            SoundType::RandomEvent => {
+                // Special event sound - distinctive pattern
+                for i in 0..2 {
+                    print!("\x07");
+                    std::thread::sleep(Duration::from_millis(if i == 0 { 100 } else { 200 }));
+                }
+            },
+            SoundType::DayChange => {
+                // Subtle day change - soft bell
+                print!("\x07");
+            },
+            SoundType::Paused => {
+                // Pause sound - very brief
+                print!("\x07");
+            },
+            SoundType::Navigation => {
+                // Very subtle navigation - no sound by default to avoid spam
+                // Could add very quiet click if needed
+            },
+        }
+        
+        // Ensure sound is flushed immediately
+        let _ = io::stdout().flush();
+    }
+    
+    fn toggle(&mut self) {
+        self.enabled = !self.enabled;
+    }
+    
+    fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct GiftCard {
@@ -1749,6 +1847,7 @@ struct App {
     last_time_update: Instant,
     game_speed: Duration, // How often to advance time
     paused: bool,
+    sound_effects: SoundEffects,
 }
 
 impl App {
@@ -1761,6 +1860,7 @@ impl App {
             last_time_update: Instant::now(),
             game_speed: Duration::from_secs(3), // Advance 10 minutes every 3 seconds
             paused: false,
+            sound_effects: SoundEffects::new(),
         }
     }
 
@@ -1780,6 +1880,7 @@ impl App {
         // Check if we need to switch to random event screen for player choice
         if self.game_data.random_events.player_choice_pending && 
            !matches!(self.screen, Screen::RandomEvent) {
+            self.sound_effects.play(SoundType::RandomEvent);
             self.screen = Screen::RandomEvent;
             self.selected_menu_item = 0; // Reset selection
         } else if !self.game_data.random_events.player_choice_pending && 
@@ -1789,10 +1890,25 @@ impl App {
             self.selected_menu_item = 0;
         }
     }
+    
+    fn check_for_audio_events(&mut self) {
+        // Check for recent achievement unlocks
+        if let Some(_achievement_name) = self.game_data.achievements.get_recent_unlock() {
+            self.sound_effects.play(SoundType::LevelUp);
+        }
+        
+        // Check for new orders (simple detection by counting recent activities with order keywords)
+        if let Some(recent_activity) = self.game_data.recent_activities.first() {
+            if recent_activity.contains("New customer order") || recent_activity.contains("📝 Order from") {
+                self.sound_effects.play(SoundType::NewOrder);
+            }
+        }
+    }
 
     fn toggle_pause(&mut self) {
         if !matches!(self.screen, Screen::MainMenu) {
             self.paused = !self.paused;
+            self.sound_effects.play(SoundType::Paused);
             let status = if self.paused { "⏸️ Paused" } else { "▶️ Resumed" };
             self.game_data.recent_activities.insert(0, status.to_string());
             if self.game_data.recent_activities.len() > 10 {
@@ -1829,6 +1945,9 @@ impl App {
             
             if self.game_data.can_afford(purchase_cost) {
                 if self.game_data.spend_money(purchase_cost) {
+                    // Play purchase success sound
+                    self.sound_effects.play(SoundType::Purchase);
+                    
                     // Create the gift card with random expiration (30-90 days)
                     let expiration_days = 30 + (self.game_data.day % 60); // Simple randomization
                     let card = GiftCard::new(retailer, *denomination, *cost, expiration_days);
@@ -1854,6 +1973,7 @@ impl App {
                 }
             } else {
                 // Not enough money
+                self.sound_effects.play(SoundType::Error);
                 let activity = format!(
                     "❌ Insufficient funds for {} ${} (need ${})", 
                     retailer, denomination, cost
@@ -1879,7 +1999,14 @@ impl App {
         let order_index = self.selected_menu_item.min(self.game_data.customer_orders.len() - 1);
         
         // Attempt to fulfill the order
-        self.game_data.fulfill_order(order_index);
+        let success = self.game_data.fulfill_order(order_index);
+        
+        // Play appropriate sound
+        if success {
+            self.sound_effects.play(SoundType::Sale);
+        } else {
+            self.sound_effects.play(SoundType::Error);
+        }
         
         // Adjust selection if we're now beyond the list
         if self.selected_menu_item >= self.game_data.customer_orders.len() && !self.game_data.customer_orders.is_empty() {
@@ -2121,6 +2248,9 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Result<(
         // Check for active random events that need player choice
         app.check_for_active_events();
         
+        // Check for audio events (achievements, new orders, etc.)
+        app.check_for_audio_events();
+        
         terminal.draw(|f| ui(f, &app))?;
 
         // Use poll instead of read to avoid blocking
@@ -2165,6 +2295,19 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Result<(
                     KeyCode::Char('8') if matches!(app.screen, Screen::Dashboard) => {
                         app.selected_menu_item = 7;
                         app.select_menu_item();
+                    },
+                    KeyCode::Char('s') | KeyCode::Char('S') => {
+                        // Toggle sound effects
+                        app.sound_effects.toggle();
+                        let status = if app.sound_effects.is_enabled() { 
+                            "🔊 Sound effects enabled" 
+                        } else { 
+                            "🔇 Sound effects disabled" 
+                        };
+                        app.game_data.recent_activities.insert(0, status.to_string());
+                        if app.game_data.recent_activities.len() > 10 {
+                            app.game_data.recent_activities.truncate(10);
+                        }
                     },
                     _ => {}
                 }
@@ -2388,8 +2531,10 @@ fn draw_dashboard(f: &mut Frame, app: &App) {
 
     // Footer with controls and pause status
     let pause_indicator = if app.paused { " ⏸️ PAUSED" } else { "" };
+    let sound_indicator = if app.sound_effects.is_enabled() { " 🔊" } else { " 🔇" };
     let footer_text = format!(
-        "↑↓ Navigate  Enter Select  [1-8] Quick Access  Space Pause  Esc Back  Q Quit{}",
+        "↑↓ Navigate  Enter Select  [1-8] Quick Access  Space Pause  S Sound{}  Esc Back  Q Quit{}",
+        sound_indicator,
         pause_indicator
     );
     let footer = Paragraph::new(footer_text)

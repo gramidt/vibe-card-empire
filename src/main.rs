@@ -1038,3 +1038,118 @@ fn draw_placeholder(f: &mut Frame, title: &str, description: &str) {
 
     f.render_widget(placeholder, size);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_game_data_initialization() {
+        let game_data = GameData::new();
+        
+        assert_eq!(game_data.cash, 5000);
+        assert_eq!(game_data.reputation, 3);
+        assert_eq!(game_data.day, 1);
+        assert_eq!(game_data.hour, 9);
+        assert_eq!(game_data.minute, 0);
+        assert!(!game_data.inventory.is_empty());
+        assert!(!game_data.customer_orders.is_empty());
+    }
+
+    #[test]
+    fn test_purchase_mechanics() {
+        let mut game_data = GameData::new();
+        let initial_cash = game_data.cash;
+        let initial_inventory_count = game_data.inventory.len();
+        
+        // Test successful purchase
+        assert!(game_data.can_afford(100));
+        assert!(game_data.spend_money(100));
+        assert_eq!(game_data.cash, initial_cash - 100);
+        
+        // Test insufficient funds
+        assert!(!game_data.can_afford(10000));
+        assert!(!game_data.spend_money(10000));
+        assert_eq!(game_data.cash, initial_cash - 100); // Should not change
+        
+        // Test inventory addition
+        let card = GiftCard::new("TestCard", 25, 20, 30);
+        game_data.add_to_inventory(card, 2);
+        assert_eq!(game_data.inventory.len(), initial_inventory_count + 1);
+    }
+
+    #[test]
+    fn test_time_progression() {
+        let mut game_data = GameData::new();
+        let initial_day = game_data.day;
+        let initial_hour = game_data.hour;
+        let initial_minute = game_data.minute;
+        
+        // Test minute advancement
+        game_data.advance_time(30);
+        assert_eq!(game_data.minute, initial_minute + 30);
+        
+        // Test hour rollover
+        game_data.advance_time(35); // Should go to next hour
+        assert_eq!(game_data.hour, initial_hour + 1);
+        assert_eq!(game_data.minute, 5); // 30 + 35 = 65, 65 % 60 = 5
+        
+        // Test day advancement (would need to advance many hours)
+        game_data.hour = 23;
+        game_data.minute = 50;
+        game_data.advance_time(20); // Should trigger new day
+        assert_eq!(game_data.day, initial_day + 1);
+        assert_eq!(game_data.hour, 0);
+        assert_eq!(game_data.minute, 10);
+    }
+
+    #[test]
+    fn test_customer_order_system() {
+        let mut game_data = GameData::new();
+        let initial_order_count = game_data.customer_orders.len();
+        
+        // Test order generation
+        game_data.generate_random_order();
+        assert_eq!(game_data.customer_orders.len(), initial_order_count + 1);
+        
+        // Test order properties
+        if let Some(order) = game_data.customer_orders.back() {
+            assert!(order.id >= 1000);
+            assert!(!order.customer_name.is_empty());
+            assert!(!order.retailer.is_empty());
+            assert!(order.denomination > 0);
+            assert!(order.quantity > 0);
+            assert!(order.offered_price_per_card > 0);
+            assert!(order.deadline_days > 0);
+        }
+    }
+
+    #[test]
+    fn test_gift_card_pricing() {
+        let amazon_card = GiftCard::new("Amazon", 25, 20, 30);
+        assert_eq!(amazon_card.market_value(), 32); // 25 * 1.30 = 32.5 -> 32
+        assert_eq!(amazon_card.potential_profit(), 12); // 32 - 20 = 12
+        
+        let starbucks_card = GiftCard::new("Starbucks", 10, 8, 60);
+        assert_eq!(starbucks_card.market_value(), 12); // 10 * 1.25 = 12.5 -> 12
+        assert_eq!(starbucks_card.potential_profit(), 4); // 12 - 8 = 4
+        
+        // Test expiration detection
+        let expiring_card = GiftCard::new("Target", 50, 42, 10);
+        assert!(expiring_card.is_expiring_soon()); // <= 15 days
+        
+        let fresh_card = GiftCard::new("iTunes", 15, 12, 30);
+        assert!(!fresh_card.is_expiring_soon()); // > 15 days
+    }
+
+    #[test] 
+    fn test_app_initialization() {
+        let app = App::new();
+        
+        assert!(matches!(app.screen, Screen::MainMenu));
+        assert_eq!(app.selected_menu_item, 0);
+        assert!(!app.should_quit);
+        assert!(!app.paused);
+        assert_eq!(app.game_data.cash, 5000);
+    }
+}

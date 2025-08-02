@@ -400,6 +400,92 @@ impl GameData {
             self.generate_random_order();
         }
     }
+
+    fn can_fulfill_order(&self, order: &CustomerOrder) -> bool {
+        // Check if we have the required cards in inventory
+        for item in &self.inventory {
+            if item.card.retailer == order.retailer && 
+               item.card.denomination == order.denomination &&
+               item.quantity >= order.quantity {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn fulfill_order(&mut self, order_index: usize) -> bool {
+        if order_index >= self.customer_orders.len() {
+            return false;
+        }
+
+        let order = self.customer_orders[order_index].clone();
+        
+        if !self.can_fulfill_order(&order) {
+            // Add failure message
+            self.recent_activities.insert(0, format!(
+                "❌ Cannot fulfill order #{} - insufficient inventory", 
+                order.id
+            ));
+            if self.recent_activities.len() > 10 {
+                self.recent_activities.truncate(10);
+            }
+            return false;
+        }
+
+        // Find and remove cards from inventory
+        let mut cards_needed = order.quantity;
+        let mut inventory_to_remove = Vec::new();
+        
+        for (i, item) in self.inventory.iter_mut().enumerate() {
+            if item.card.retailer == order.retailer && 
+               item.card.denomination == order.denomination &&
+               cards_needed > 0 {
+                
+                let cards_to_take = cards_needed.min(item.quantity);
+                cards_needed -= cards_to_take;
+                
+                if cards_to_take == item.quantity {
+                    // Remove entire inventory item
+                    inventory_to_remove.push(i);
+                } else {
+                    // Reduce quantity
+                    item.quantity -= cards_to_take;
+                }
+                
+                if cards_needed == 0 {
+                    break;
+                }
+            }
+        }
+
+        // Remove depleted inventory items (in reverse order to maintain indices)
+        for &i in inventory_to_remove.iter().rev() {
+            self.inventory.remove(i);
+        }
+
+        // Calculate earnings and profit
+        let total_earnings = order.total_offered();
+        let cost_basis = order.quantity * (order.denomination - 5); // Estimate wholesale cost
+        let profit = total_earnings as i32 - cost_basis as i32;
+        
+        // Add money to cash
+        self.cash += total_earnings;
+        
+        // Remove the completed order
+        self.customer_orders.remove(order_index);
+        
+        // Add success message
+        self.recent_activities.insert(0, format!(
+            "✅ Completed order #{}: {} {} ${} cards for ${} (profit: ${})",
+            order.id, order.quantity, order.retailer, order.denomination, 
+            total_earnings, profit
+        ));
+        if self.recent_activities.len() > 10 {
+            self.recent_activities.truncate(10);
+        }
+
+        true
+    }
 }
 
 #[derive(Debug)]
@@ -498,6 +584,29 @@ impl App {
         }
     }
 
+    fn fulfill_customer_order(&mut self) {
+        if !matches!(self.screen, Screen::Orders) {
+            return;
+        }
+
+        if self.game_data.customer_orders.is_empty() {
+            return;
+        }
+
+        // Ensure selected item is within bounds
+        let order_index = self.selected_menu_item.min(self.game_data.customer_orders.len() - 1);
+        
+        // Attempt to fulfill the order
+        self.game_data.fulfill_order(order_index);
+        
+        // Adjust selection if we're now beyond the list
+        if self.selected_menu_item >= self.game_data.customer_orders.len() && !self.game_data.customer_orders.is_empty() {
+            self.selected_menu_item = self.game_data.customer_orders.len() - 1;
+        } else if self.game_data.customer_orders.is_empty() {
+            self.selected_menu_item = 0;
+        }
+    }
+
     fn next_menu_item(&mut self) {
         let menu_items = match self.screen {
             Screen::MainMenu => 4, // New Game, Continue, Tutorial, Quit
@@ -551,6 +660,11 @@ impl App {
             Screen::Market => {
                 // Purchase item from market (stay on market screen)
                 self.purchase_from_market();
+                return; // Don't reset selection
+            }
+            Screen::Orders => {
+                // Fulfill customer order (stay on orders screen)
+                self.fulfill_customer_order();
                 return; // Don't reset selection
             }
             _ => {
@@ -959,8 +1073,8 @@ fn draw_orders(f: &mut Frame, app: &App) {
     } else {
         // Create table header and rows
         let mut table_content = vec![
-            "Order #  │ Customer │ Item           │ Qty │ Offer │ Days │ Priority".to_string(),
-            "─────────┼──────────┼────────────────┼─────┼───────┼──────┼────────".to_string(),
+            "   Order #  │ Customer │ Item           │ Qty │ Offer │ Days │ Priority".to_string(),
+            "────────────┼──────────┼────────────────┼─────┼───────┼──────┼────────".to_string(),
         ];
 
         for (i, order) in app.game_data.customer_orders.iter().enumerate() {
@@ -971,9 +1085,17 @@ fn draw_orders(f: &mut Frame, app: &App) {
                 OrderPriority::Low => "🟢",
             };
             
+            // Check if order can be fulfilled
+            let fulfillment_indicator = if app.game_data.can_fulfill_order(order) {
+                "✅"
+            } else {
+                "❌"
+            };
+            
             table_content.push(format!(
-                "{} #{:4}   │ {:8} │ {} ${:2}      │  {:2} │ ${:3}  │  {:2}  │ {} {}",
+                "{} {} #{:4} │ {:8} │ {} ${:2}      │  {:2} │ ${:3}  │  {:2}  │ {} {}",
                 style_char,
+                fulfillment_indicator,
                 order.id,
                 order.customer_name,
                 order.retailer,
@@ -1013,7 +1135,7 @@ fn draw_orders(f: &mut Frame, app: &App) {
     }
 
     // Footer with controls
-    let footer_text = "↑↓ Select  Enter Accept (Coming Soon)  Esc Back";
+    let footer_text = "↑↓ Select  Enter Fulfill Order  Esc Back";
     let footer = Paragraph::new(footer_text)
         .block(Block::default()
             .borders(Borders::ALL)
@@ -1151,5 +1273,80 @@ mod tests {
         assert!(!app.should_quit);
         assert!(!app.paused);
         assert_eq!(app.game_data.cash, 5000);
+    }
+
+    #[test]
+    fn test_order_fulfillment() {
+        let mut game_data = GameData::new();
+        let initial_cash = game_data.cash;
+        
+        // Find existing Amazon inventory to know the starting amount
+        let initial_amazon_quantity = game_data.inventory.iter()
+            .find(|item| item.card.retailer == "Amazon" && item.card.denomination == 25)
+            .map(|item| item.quantity)
+            .unwrap_or(0);
+        
+        // Create a test order
+        let order = CustomerOrder::new(
+            9999,
+            "TestCustomer",
+            "Amazon", 
+            25,
+            2,
+            30, // $30 per card
+            3,
+            OrderPriority::High
+        );
+        
+        game_data.customer_orders.push_back(order.clone());
+        let order_count = game_data.customer_orders.len();
+        
+        // Test fulfillment capability (should work with sample inventory)
+        assert!(game_data.can_fulfill_order(&order));
+        
+        // Fulfill the order
+        assert!(game_data.fulfill_order(order_count - 1));
+        
+        // Verify results
+        assert_eq!(game_data.customer_orders.len(), order_count - 1); // Order removed
+        assert_eq!(game_data.cash, initial_cash + 60); // 2 cards * $30 = $60
+        
+        // Check inventory was reduced by 2
+        let final_amazon_quantity = game_data.inventory.iter()
+            .find(|item| item.card.retailer == "Amazon" && item.card.denomination == 25)
+            .map(|item| item.quantity)
+            .unwrap_or(0);
+        assert_eq!(final_amazon_quantity, initial_amazon_quantity - 2);
+    }
+
+    #[test]
+    fn test_order_fulfillment_failure() {
+        let mut game_data = GameData::new();
+        
+        // Create an order we can't fulfill
+        let order = CustomerOrder::new(
+            9999,
+            "TestCustomer", 
+            "NonExistent",
+            100,
+            5,
+            200,
+            3,
+            OrderPriority::High
+        );
+        
+        game_data.customer_orders.push_back(order.clone());
+        let order_count = game_data.customer_orders.len();
+        let initial_cash = game_data.cash;
+        
+        // Test that we can't fulfill it
+        assert!(!game_data.can_fulfill_order(&order));
+        
+        // Attempt fulfillment should fail
+        assert!(!game_data.fulfill_order(order_count - 1));
+        
+        // Order should still be there, cash unchanged
+        assert_eq!(game_data.customer_orders.len(), order_count);
+        assert_eq!(game_data.cash, initial_cash);
     }
 }

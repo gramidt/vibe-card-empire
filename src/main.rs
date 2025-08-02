@@ -223,6 +223,78 @@ struct AchievementTracker {
     events_survived: u32,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum RandomEventType {
+    // Positive events
+    LoyalCustomer,      // Customer offers premium price for bulk order
+    SupplierDiscount,   // Get discount on next 3 purchases
+    MediaAttention,     // Reputation boost and customer influx
+    LuckyFind,          // Discover extra valuable cards in inventory
+    TechGlitch,         // Online competitor down, more customers
+    
+    // Negative events  
+    CardTheft,          // Lose some inventory to theft
+    CustomerComplaint,  // Reputation damage and compensation needed
+    SupplierIssue,      // Next few purchases more expensive
+    MarketCrash,        // All inventory temporarily worth less
+    RegulationChange,   // New rules cause complications
+    
+    // Neutral/Choice events
+    BusinessOffer,      // Choose between different business opportunities
+    CharityRequest,     // Option to donate for reputation boost
+    InventoryAudit,     // Discover accounting discrepancies
+    CompetitorMeeting,  // Opportunity for partnership or rivalry
+    CustomerSurvey,     // Feedback that affects future operations
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RandomEvent {
+    event_type: RandomEventType,
+    title: String,
+    description: String,
+    choice_a: Option<String>,   // First choice option
+    choice_b: Option<String>,   // Second choice option
+    choice_c: Option<String>,   // Third choice option (rare)
+    auto_resolve: bool,         // True if event resolves automatically
+    cash_impact: i32,           // Immediate cash change (can be negative)
+    reputation_impact: i8,      // Reputation change (-2 to +2)
+    inventory_impact: Vec<(String, i32)>, // (retailer, quantity change)
+    duration_days: u32,         // How long effects last
+    active: bool,               // Whether event is currently active
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct RandomEventManager {
+    active_event: Option<RandomEvent>,
+    next_event_in_days: u32,
+    event_history: Vec<String>, // Record of past events
+    player_choice_pending: bool,
+    choice_deadline: u32,       // Day when choice must be made
+    temp_modifiers: Vec<TempModifier>, // Temporary effects from events
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TempModifier {
+    name: String,
+    description: String,
+    price_multiplier: f32,      // Affects purchase prices
+    demand_multiplier: f32,     // Affects order frequency
+    reputation_protection: bool, // Prevents reputation loss
+    remaining_days: u32,
+}
+
+impl TempModifier {
+    fn age_day(&mut self) {
+        if self.remaining_days > 0 {
+            self.remaining_days -= 1;
+        }
+    }
+    
+    fn is_expired(&self) -> bool {
+        self.remaining_days == 0
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct GameData {
     cash: u32,
@@ -237,6 +309,7 @@ struct GameData {
     analytics: BusinessAnalytics,
     market_conditions: MarketConditions,
     achievements: AchievementTracker,
+    random_events: RandomEventManager,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -529,6 +602,17 @@ impl MarketConditions {
         
         multiplier
     }
+    
+    fn get_price_multiplier_with_random_events(&self, retailer: &str, random_events: &RandomEventManager) -> f32 {
+        let mut multiplier = self.get_price_multiplier(retailer);
+        
+        // Apply random event modifiers
+        for modifier in &random_events.temp_modifiers {
+            multiplier *= modifier.price_multiplier;
+        }
+        
+        multiplier
+    }
 
     fn get_demand_multiplier(&self, retailer: &str) -> f32 {
         let mut multiplier = self.base_demand_modifier;
@@ -786,6 +870,373 @@ impl AchievementTracker {
     }
 }
 
+impl RandomEvent {
+    fn new_auto_event(event_type: RandomEventType, title: &str, description: &str, cash: i32, reputation: i8, duration: u32) -> Self {
+        Self {
+            event_type,
+            title: title.to_string(),
+            description: description.to_string(),
+            choice_a: None,
+            choice_b: None,
+            choice_c: None,
+            auto_resolve: true,
+            cash_impact: cash,
+            reputation_impact: reputation,
+            inventory_impact: Vec::new(),
+            duration_days: duration,
+            active: true,
+        }
+    }
+
+    fn new_choice_event(event_type: RandomEventType, title: &str, description: &str, choice_a: &str, choice_b: &str, choice_c: Option<&str>) -> Self {
+        Self {
+            event_type,
+            title: title.to_string(),
+            description: description.to_string(),
+            choice_a: Some(choice_a.to_string()),
+            choice_b: Some(choice_b.to_string()),
+            choice_c: choice_c.map(|s| s.to_string()),
+            auto_resolve: false,
+            cash_impact: 0,
+            reputation_impact: 0,
+            inventory_impact: Vec::new(),
+            duration_days: 1,
+            active: true,
+        }
+    }
+
+    fn apply_choice(&mut self, choice: usize) -> (i32, i8, Vec<TempModifier>) {
+        let mut temp_modifiers = Vec::new();
+        
+        match (&self.event_type, choice) {
+            // Business Offer choices
+            (RandomEventType::BusinessOffer, 0) => {
+                // Choice A: Accept partnership - get discount modifier
+                self.cash_impact = -1000;
+                self.reputation_impact = 0;
+                temp_modifiers.push(TempModifier {
+                    name: "Business Partnership".to_string(),
+                    description: "10% discount on purchases".to_string(),
+                    price_multiplier: 0.9,
+                    demand_multiplier: 1.0,
+                    reputation_protection: false,
+                    remaining_days: 14,
+                });
+            },
+            (RandomEventType::BusinessOffer, 1) => {
+                // Choice B: Go solo - get reputation boost
+                self.cash_impact = 0;
+                self.reputation_impact = 1;
+            },
+
+            // Charity Request choices
+            (RandomEventType::CharityRequest, 0) => {
+                // Choice A: Donate money
+                self.cash_impact = -500;
+                self.reputation_impact = 2;
+            },
+            (RandomEventType::CharityRequest, 1) => {
+                // Choice B: Donate cards (if possible)
+                self.cash_impact = 0;
+                self.reputation_impact = 1;
+                self.inventory_impact.push(("Amazon".to_string(), -2));
+            },
+            (RandomEventType::CharityRequest, 2) => {
+                // Choice C: Decline
+                self.cash_impact = 0;
+                self.reputation_impact = -1;
+            },
+
+            // Competitor Meeting choices
+            (RandomEventType::CompetitorMeeting, 0) => {
+                // Choice A: Collaborate
+                self.cash_impact = 0;
+                self.reputation_impact = 0;
+                temp_modifiers.push(TempModifier {
+                    name: "Market Collaboration".to_string(),
+                    description: "Increased customer demand".to_string(),
+                    price_multiplier: 1.0,
+                    demand_multiplier: 1.3,
+                    reputation_protection: false,
+                    remaining_days: 10,
+                });
+            },
+            (RandomEventType::CompetitorMeeting, 1) => {
+                // Choice B: Compete aggressively
+                self.cash_impact = -200;
+                self.reputation_impact = 0;
+                temp_modifiers.push(TempModifier {
+                    name: "Price War".to_string(),
+                    description: "Cheaper purchases but lower demand".to_string(),
+                    price_multiplier: 0.85,
+                    demand_multiplier: 0.8,
+                    reputation_protection: false,
+                    remaining_days: 7,
+                });
+            },
+
+            // Default case
+            _ => {
+                self.cash_impact = 0;
+                self.reputation_impact = 0;
+            }
+        }
+
+        (self.cash_impact, self.reputation_impact, temp_modifiers)
+    }
+}
+
+
+impl RandomEventManager {
+    fn new() -> Self {
+        Self {
+            active_event: None,
+            next_event_in_days: 3 + (1 % 5), // Next event in 3-7 days
+            event_history: Vec::new(),
+            player_choice_pending: false,
+            choice_deadline: 0,
+            temp_modifiers: Vec::new(),
+        }
+    }
+
+    fn process_daily_events(&mut self, day: u32, activities: &mut Vec<String>) -> Option<RandomEvent> {
+        // Age temporary modifiers
+        self.temp_modifiers.retain_mut(|modifier| {
+            modifier.age_day();
+            if modifier.is_expired() {
+                activities.insert(0, format!("📅 {} effect has ended", modifier.name));
+                false
+            } else {
+                true
+            }
+        });
+
+        // Check for choice deadline
+        if self.player_choice_pending && day >= self.choice_deadline {
+            // Force auto-resolve if player didn't choose
+            if let Some(ref mut event) = self.active_event {
+                let (cash, reputation, modifiers) = event.apply_choice(0); // Default to first choice
+                self.temp_modifiers.extend(modifiers);
+                activities.insert(0, format!("⏰ {} auto-resolved (no choice made)", event.title));
+                
+                self.player_choice_pending = false;
+                self.active_event = None;
+            }
+        }
+
+        // Check for new events
+        if self.active_event.is_none() && self.next_event_in_days > 0 {
+            self.next_event_in_days -= 1;
+            None
+        } else if self.active_event.is_none() && self.next_event_in_days == 0 {
+            let mut new_event = self.generate_random_event(day);
+            activities.insert(0, format!("🎲 Random event: {}", new_event.title));
+            
+            if new_event.auto_resolve {
+                // Auto-resolve immediate events
+                let (cash, reputation, modifiers) = new_event.apply_choice(0);
+                self.temp_modifiers.extend(modifiers);
+                self.next_event_in_days = 3 + (day % 5); // Schedule next event
+                None
+            } else {
+                // Set up choice event
+                self.player_choice_pending = true;
+                self.choice_deadline = day + 2; // 2 days to choose
+                self.next_event_in_days = 3 + (day % 5); // Schedule next event
+                Some(new_event)
+            }
+        } else {
+            None
+        }
+    }
+
+    fn generate_random_event(&mut self, day: u32) -> RandomEvent {
+        let event_type = day % 15; // 15 different event types
+        
+        let event = match event_type {
+            0 => RandomEvent::new_auto_event(
+                RandomEventType::LoyalCustomer,
+                "Loyal Customer Returns",
+                "A satisfied customer wants to buy $2000 worth of gift cards at premium prices!",
+                2000,
+                1,
+                1
+            ),
+            1 => RandomEvent::new_auto_event(
+                RandomEventType::SupplierDiscount,
+                "Supplier Discount",
+                "Your supplier offers 15% off your next 3 purchases due to good relationship!",
+                0,
+                0,
+                1
+            ),
+            2 => RandomEvent::new_auto_event(
+                RandomEventType::MediaAttention,
+                "Positive Media Coverage",
+                "Local news features your business! Reputation increases and more customers arrive.",
+                500,
+                1,
+                3
+            ),
+            3 => RandomEvent::new_auto_event(
+                RandomEventType::LuckyFind,
+                "Inventory Audit Bonus",
+                "During inventory count, you discover some cards are worth more than expected!",
+                800,
+                0,
+                1
+            ),
+            4 => RandomEvent::new_auto_event(
+                RandomEventType::TechGlitch,
+                "Competitor System Down",
+                "Major online competitor experiences technical issues. Customers flock to you!",
+                0,
+                0,
+                2
+            ),
+            5 => RandomEvent::new_auto_event(
+                RandomEventType::CardTheft,
+                "Security Incident",
+                "Unfortunately, some inventory was stolen. Insurance covers part of the loss.",
+                -300,
+                -1,
+                1
+            ),
+            6 => RandomEvent::new_auto_event(
+                RandomEventType::CustomerComplaint,
+                "Customer Complaint",
+                "An unsatisfied customer posts negative reviews. You compensate to maintain reputation.",
+                -400,
+                -1,
+                1
+            ),
+            7 => RandomEvent::new_auto_event(
+                RandomEventType::SupplierIssue,
+                "Supplier Price Increase",
+                "Your main supplier raises prices due to increased demand. Costs go up temporarily.",
+                0,
+                0,
+                5
+            ),
+            8 => RandomEvent::new_auto_event(
+                RandomEventType::MarketCrash,
+                "Market Downturn",
+                "Economic uncertainty affects gift card values. Customer demand drops temporarily.",
+                0,
+                0,
+                4
+            ),
+            9 => RandomEvent::new_auto_event(
+                RandomEventType::RegulationChange,
+                "New Regulations",
+                "Government introduces new gift card regulations. Compliance costs required.",
+                -600,
+                0,
+                1
+            ),
+            10 => RandomEvent::new_choice_event(
+                RandomEventType::BusinessOffer,
+                "Partnership Proposal",
+                "Another gift card business proposes a partnership. Split costs but share profits.",
+                "Accept partnership (-$1000, get purchase discount)",
+                "Decline and stay independent (+reputation)",
+                None
+            ),
+            11 => RandomEvent::new_choice_event(
+                RandomEventType::CharityRequest,
+                "Charity Fundraiser",
+                "Local charity asks for donation. Good for reputation but costs money or inventory.",
+                "Donate $500 cash (++reputation)",
+                "Donate 2 Amazon cards (+reputation)",
+                Some("Politely decline (-reputation)")
+            ),
+            12 => RandomEvent::new_auto_event(
+                RandomEventType::InventoryAudit,
+                "Surprise Inventory Check",
+                "Accounting review reveals minor discrepancies. Small penalty but processes improved.",
+                -200,
+                0,
+                1
+            ),
+            13 => RandomEvent::new_choice_event(
+                RandomEventType::CompetitorMeeting,
+                "Competitor Conference",
+                "Industry meeting with other gift card sellers. Choose your approach.",
+                "Collaborate for mutual benefit (+demand)",
+                "Compete aggressively (price war)",
+                None
+            ),
+            _ => RandomEvent::new_auto_event(
+                RandomEventType::CustomerSurvey,
+                "Customer Feedback Survey",
+                "Customer survey results show satisfaction with your service. Reputation boost!",
+                0,
+                1,
+                1
+            ),
+        };
+
+        // Schedule next event
+        self.next_event_in_days = 7 + (day % 14); // Next event in 7-20 days
+        
+        // Record in history
+        self.event_history.push(format!("Day {}: {}", day, event.title));
+        if self.event_history.len() > 10 {
+            self.event_history.remove(0); // Keep only last 10 events
+        }
+
+        // Set as active event
+        if event.auto_resolve {
+            // Will be processed immediately
+            event
+        } else {
+            // Store for player choice
+            self.active_event = Some(event.clone());
+            event
+        }
+    }
+
+    fn make_choice(&mut self, choice: usize) -> Option<(i32, i8, Vec<TempModifier>)> {
+        if let Some(ref mut event) = self.active_event {
+            let result = event.apply_choice(choice);
+            self.player_choice_pending = false;
+            self.active_event = None;
+            Some(result)
+        } else {
+            None
+        }
+    }
+
+    fn get_active_choice_event(&self) -> Option<&RandomEvent> {
+        if self.player_choice_pending {
+            self.active_event.as_ref()
+        } else {
+            None
+        }
+    }
+
+    fn get_total_price_multiplier(&self) -> f32 {
+        self.temp_modifiers.iter()
+            .map(|m| m.price_multiplier)
+            .product()
+    }
+
+    fn get_total_demand_multiplier(&self) -> f32 {
+        self.temp_modifiers.iter()
+            .map(|m| m.demand_multiplier)
+            .product()
+    }
+
+    fn has_reputation_protection(&self) -> bool {
+        self.temp_modifiers.iter()
+            .any(|m| m.reputation_protection)
+    }
+
+    fn get_active_modifiers(&self) -> &[TempModifier] {
+        &self.temp_modifiers
+    }
+}
+
 impl GameData {
     fn new() -> Self {
         // Create some sample inventory for testing
@@ -829,6 +1280,7 @@ impl GameData {
             analytics: BusinessAnalytics::new(),
             market_conditions: MarketConditions::new(),
             achievements: AchievementTracker::new(),
+            random_events: RandomEventManager::new(),
         };
 
         // Generate some initial customer orders
@@ -910,6 +1362,12 @@ impl GameData {
         self.achievements.check_cash_achievements(self.cash, self.day, &mut self.recent_activities);
         self.achievements.check_inventory_achievements(&self.inventory, self.day, &mut self.recent_activities);
         self.achievements.check_seasonal_achievements(&self.market_conditions.current_season, self.achievements.seasonal_winter_profit, self.day, &mut self.recent_activities);
+
+        // Process random events
+        if let Some(event) = self.random_events.process_daily_events(self.day, &mut self.recent_activities) {
+            // Handle any returned events (choice-based events)
+            self.random_events.active_event = Some(event);
+        }
 
         // Add daily startup message
         let season = self.market_conditions.current_season.display();
@@ -1331,7 +1789,7 @@ impl App {
         // Apply market conditions to get actual prices
         let market_items: Vec<(&str, u32, u32, u32)> = base_market_items.iter()
             .map(|(retailer, value, base_cost, stock)| {
-                let price_multiplier = self.game_data.market_conditions.get_price_multiplier(retailer);
+                let price_multiplier = self.game_data.market_conditions.get_price_multiplier_with_random_events(retailer, &self.game_data.random_events);
                 let actual_cost = (*base_cost as f32 * price_multiplier).round() as u32;
                 (*retailer, *value, actual_cost, *stock)
             })
@@ -1352,7 +1810,7 @@ impl App {
                     self.game_data.analytics.record_purchase(purchase_cost);
                     
                     // Check market purchase achievements
-                    let price_multiplier = self.game_data.market_conditions.get_price_multiplier(retailer);
+                    let price_multiplier = self.game_data.market_conditions.get_price_multiplier_with_random_events(retailer, &self.game_data.random_events);
                     self.game_data.achievements.record_market_purchase(price_multiplier, self.game_data.day, &mut self.game_data.recent_activities);
                     
                     // Add activity log
@@ -1866,7 +2324,7 @@ fn draw_market(f: &mut Frame, app: &App) {
     
     let market_items: Vec<(String, u32, u32, u32, String)> = base_market_items.iter()
         .map(|(retailer, value, base_cost, stock)| {
-            let price_multiplier = app.game_data.market_conditions.get_price_multiplier(retailer);
+            let price_multiplier = app.game_data.market_conditions.get_price_multiplier_with_random_events(retailer, &app.game_data.random_events);
             let actual_cost = (*base_cost as f32 * price_multiplier).round() as u32;
             let trend = if price_multiplier > 1.1 {
                 "↗".to_string() // Rising

@@ -134,10 +134,11 @@ enum Screen {
     Orders,
     Inventory,
     Analytics,
+    Achievements,
     Settings,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 enum Season {
     Spring,   // March-May: Fresh start, moderate demand
     Summer,   // June-August: Vacation season, travel cards popular
@@ -164,6 +165,64 @@ struct MarketConditions {
     next_event_in_days: u32,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+enum AchievementType {
+    // Progress milestones
+    FirstSale,
+    EarlyBird,      // Complete first 10 orders
+    Entrepreneur,   // Reach $10,000 cash
+    BusinessMogul,  // Reach $50,000 cash
+    Millionaire,    // Reach $1,000,000 cash
+    
+    // Performance achievements
+    PerfectWeek,    // 7 days with 100% order completion
+    SpeedDemon,     // Fulfill 5 orders in one day
+    Efficiency,     // Maintain 90%+ order success rate for 30 days
+    MarketMaster,   // Buy during 5 different favorable market events
+    
+    // Reputation achievements
+    LegendaryStatus,    // Reach 5-star reputation
+    CustomerFavorite,   // Complete 100 orders
+    TrustedSeller,     // Complete 500 orders
+    
+    // Seasonal achievements
+    WinterWinner,      // Earn $5,000 profit in Winter season
+    SeasonVeteran,     // Survive all 4 seasons
+    EventSurvivor,     // Survive 10 market events
+    
+    // Inventory achievements
+    Collector,         // Own 100+ cards simultaneously
+    DiversifiedPortfolio, // Own cards from all 5 retailers simultaneously
+    QuickTurnaround,   // Sell inventory within 3 days of purchase
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Achievement {
+    achievement_type: AchievementType,
+    name: String,
+    description: String,
+    unlocked: bool,
+    unlock_date: Option<u32>, // Game day when unlocked
+    progress: u32,           // Current progress toward goal
+    target: u32,            // Target value to unlock
+    reward_cash: u32,       // Cash reward for unlocking
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct AchievementTracker {
+    achievements: Vec<Achievement>,
+    total_unlocked: u32,
+    recent_unlock: Option<String>, // Recently unlocked achievement name
+    // Progress tracking variables
+    consecutive_perfect_days: u32,
+    consecutive_efficiency_days: u32,
+    orders_today: u32,
+    favorable_market_purchases: u32,
+    seasonal_winter_profit: i32,
+    seasons_survived: Vec<Season>,
+    events_survived: u32,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct GameData {
     cash: u32,
@@ -177,6 +236,7 @@ struct GameData {
     next_order_id: u32,
     analytics: BusinessAnalytics,
     market_conditions: MarketConditions,
+    achievements: AchievementTracker,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -487,6 +547,245 @@ impl MarketConditions {
     }
 }
 
+impl Achievement {
+    fn new(achievement_type: AchievementType, name: &str, description: &str, target: u32, reward: u32) -> Self {
+        Self {
+            achievement_type,
+            name: name.to_string(),
+            description: description.to_string(),
+            unlocked: false,
+            unlock_date: None,
+            progress: 0,
+            target,
+            reward_cash: reward,
+        }
+    }
+
+    fn update_progress(&mut self, new_progress: u32) -> bool {
+        self.progress = new_progress;
+        if !self.unlocked && self.progress >= self.target {
+            self.unlocked = true;
+            true // Achievement unlocked
+        } else {
+            false
+        }
+    }
+
+    fn unlock(&mut self, day: u32) {
+        if !self.unlocked {
+            self.unlocked = true;
+            self.unlock_date = Some(day);
+        }
+    }
+
+    fn progress_percentage(&self) -> f32 {
+        if self.target == 0 {
+            0.0
+        } else {
+            (self.progress as f32 / self.target as f32 * 100.0).min(100.0)
+        }
+    }
+}
+
+impl AchievementTracker {
+    fn new() -> Self {
+        let mut tracker = Self {
+            achievements: Vec::new(),
+            total_unlocked: 0,
+            recent_unlock: None,
+            consecutive_perfect_days: 0,
+            consecutive_efficiency_days: 0,
+            orders_today: 0,
+            favorable_market_purchases: 0,
+            seasonal_winter_profit: 0,
+            seasons_survived: Vec::new(),
+            events_survived: 0,
+        };
+        
+        tracker.initialize_achievements();
+        tracker
+    }
+
+    fn initialize_achievements(&mut self) {
+        self.achievements = vec![
+            // Progress milestones
+            Achievement::new(AchievementType::FirstSale, "First Sale", "Complete your first customer order", 1, 100),
+            Achievement::new(AchievementType::EarlyBird, "Early Bird", "Complete your first 10 orders", 10, 500),
+            Achievement::new(AchievementType::Entrepreneur, "Entrepreneur", "Accumulate $10,000 in cash", 10000, 1000),
+            Achievement::new(AchievementType::BusinessMogul, "Business Mogul", "Accumulate $50,000 in cash", 50000, 5000),
+            Achievement::new(AchievementType::Millionaire, "Millionaire", "Accumulate $1,000,000 in cash", 1000000, 50000),
+            
+            // Performance achievements
+            Achievement::new(AchievementType::PerfectWeek, "Perfect Week", "7 consecutive days with 100% order completion", 7, 2000),
+            Achievement::new(AchievementType::SpeedDemon, "Speed Demon", "Fulfill 5 orders in a single day", 5, 1500),
+            Achievement::new(AchievementType::Efficiency, "Efficiency Expert", "Maintain 90%+ success rate for 30 days", 30, 3000),
+            Achievement::new(AchievementType::MarketMaster, "Market Master", "Make purchases during 5 favorable market events", 5, 2500),
+            
+            // Reputation achievements
+            Achievement::new(AchievementType::LegendaryStatus, "Legendary Status", "Reach maximum 5-star reputation", 5, 2000),
+            Achievement::new(AchievementType::CustomerFavorite, "Customer Favorite", "Complete 100 customer orders", 100, 3000),
+            Achievement::new(AchievementType::TrustedSeller, "Trusted Seller", "Complete 500 customer orders", 500, 10000),
+            
+            // Seasonal achievements
+            Achievement::new(AchievementType::WinterWinner, "Winter Winner", "Earn $5,000 profit during Winter season", 5000, 2000),
+            Achievement::new(AchievementType::SeasonVeteran, "Season Veteran", "Experience all 4 seasons", 4, 3000),
+            Achievement::new(AchievementType::EventSurvivor, "Event Survivor", "Survive 10 market events", 10, 2500),
+            
+            // Inventory achievements
+            Achievement::new(AchievementType::Collector, "Collector", "Own 100+ gift cards simultaneously", 100, 2000),
+            Achievement::new(AchievementType::DiversifiedPortfolio, "Diversified Portfolio", "Own cards from all 5 retailers", 5, 1000),
+            Achievement::new(AchievementType::QuickTurnaround, "Quick Turnaround", "Sell inventory within 3 days of purchase", 1, 1500),
+        ];
+    }
+
+    fn check_cash_achievements(&mut self, cash: u32, day: u32, activities: &mut Vec<String>) {
+        self.check_and_unlock(&AchievementType::Entrepreneur, cash, day, activities);
+        self.check_and_unlock(&AchievementType::BusinessMogul, cash, day, activities);
+        self.check_and_unlock(&AchievementType::Millionaire, cash, day, activities);
+    }
+
+    fn check_order_achievements(&mut self, total_orders: u32, reputation: u8, day: u32, activities: &mut Vec<String>) {
+        self.check_and_unlock(&AchievementType::FirstSale, total_orders, day, activities);
+        self.check_and_unlock(&AchievementType::EarlyBird, total_orders, day, activities);
+        self.check_and_unlock(&AchievementType::CustomerFavorite, total_orders, day, activities);
+        self.check_and_unlock(&AchievementType::TrustedSeller, total_orders, day, activities);
+        self.check_and_unlock(&AchievementType::LegendaryStatus, reputation as u32, day, activities);
+    }
+
+    fn check_inventory_achievements(&mut self, inventory: &[InventoryItem], day: u32, activities: &mut Vec<String>) {
+        // Check collector achievement
+        let total_cards: u32 = inventory.iter().map(|item| item.quantity).sum();
+        self.check_and_unlock(&AchievementType::Collector, total_cards, day, activities);
+        
+        // Check diversified portfolio
+        let retailers: std::collections::HashSet<&str> = inventory.iter()
+            .map(|item| item.card.retailer.as_str())
+            .collect();
+        self.check_and_unlock(&AchievementType::DiversifiedPortfolio, retailers.len() as u32, day, activities);
+    }
+
+    fn check_seasonal_achievements(&mut self, season: &Season, winter_profit: i32, day: u32, activities: &mut Vec<String>) {
+        // Track seasons survived
+        if !self.seasons_survived.contains(season) {
+            self.seasons_survived.push(season.clone());
+        }
+        self.check_and_unlock(&AchievementType::SeasonVeteran, self.seasons_survived.len() as u32, day, activities);
+        
+        // Check winter winner
+        if matches!(season, Season::Winter) && winter_profit >= 5000 {
+            self.check_and_unlock(&AchievementType::WinterWinner, winter_profit as u32, day, activities);
+        }
+    }
+
+    fn record_order_completion(&mut self, day: u32) {
+        self.orders_today += 1;
+        
+        // Check speed demon (5 orders in one day)
+        if self.orders_today >= 5 {
+            if let Some(achievement) = self.achievements.iter_mut()
+                .find(|a| matches!(a.achievement_type, AchievementType::SpeedDemon) && !a.unlocked) {
+                achievement.unlock(day);
+                self.total_unlocked += 1;
+                self.recent_unlock = Some(achievement.name.clone());
+            }
+        }
+    }
+
+    fn record_market_purchase(&mut self, price_multiplier: f32, day: u32, activities: &mut Vec<String>) {
+        // Favorable market = prices 10%+ below normal
+        if price_multiplier <= 0.9 {
+            self.favorable_market_purchases += 1;
+            self.check_and_unlock(&AchievementType::MarketMaster, self.favorable_market_purchases, day, activities);
+        }
+    }
+
+    fn process_daily_achievements(&mut self, orders_completed_today: u32, orders_expired_today: u32, analytics: &BusinessAnalytics, day: u32) {
+        // Reset daily counters
+        self.orders_today = 0;
+
+        // Track perfect days
+        if orders_expired_today == 0 && orders_completed_today > 0 {
+            self.consecutive_perfect_days += 1;
+        } else {
+            self.consecutive_perfect_days = 0;
+        }
+
+        // Check perfect week
+        if self.consecutive_perfect_days >= 7 {
+            if let Some(achievement) = self.achievements.iter_mut()
+                .find(|a| matches!(a.achievement_type, AchievementType::PerfectWeek) && !a.unlocked) {
+                achievement.unlock(day);
+                self.total_unlocked += 1;
+                self.recent_unlock = Some(achievement.name.clone());
+            }
+        }
+
+        // Track efficiency
+        let total_orders = analytics.orders_completed + analytics.orders_expired;
+        if total_orders > 0 {
+            let success_rate = analytics.orders_completed as f32 / total_orders as f32;
+            if success_rate >= 0.9 {
+                self.consecutive_efficiency_days += 1;
+            } else {
+                self.consecutive_efficiency_days = 0;
+            }
+        }
+
+        // Check efficiency achievement
+        if self.consecutive_efficiency_days >= 30 {
+            if let Some(achievement) = self.achievements.iter_mut()
+                .find(|a| matches!(a.achievement_type, AchievementType::Efficiency) && !a.unlocked) {
+                achievement.unlock(day);
+                self.total_unlocked += 1;
+                self.recent_unlock = Some(achievement.name.clone());
+            }
+        }
+    }
+
+    fn record_event_survival(&mut self, day: u32, activities: &mut Vec<String>) {
+        self.events_survived += 1;
+        self.check_and_unlock(&AchievementType::EventSurvivor, self.events_survived, day, activities);
+    }
+
+    fn check_and_unlock(&mut self, achievement_type: &AchievementType, progress: u32, day: u32, activities: &mut Vec<String>) {
+        if let Some(achievement) = self.achievements.iter_mut()
+            .find(|a| a.achievement_type == *achievement_type && !a.unlocked) {
+            
+            achievement.progress = achievement.progress.max(progress);
+            
+            if progress >= achievement.target {
+                achievement.unlock(day);
+                self.total_unlocked += 1;
+                self.recent_unlock = Some(achievement.name.clone());
+                
+                activities.insert(0, format!(
+                    "🏆 Achievement Unlocked: {} (+${})", 
+                    achievement.name, achievement.reward_cash
+                ));
+            }
+        }
+    }
+
+    fn get_recent_unlock(&mut self) -> Option<String> {
+        self.recent_unlock.take()
+    }
+
+    fn get_unlocked_achievements(&self) -> Vec<&Achievement> {
+        self.achievements.iter().filter(|a| a.unlocked).collect()
+    }
+
+    fn get_in_progress_achievements(&self) -> Vec<&Achievement> {
+        self.achievements.iter().filter(|a| !a.unlocked && a.progress > 0).collect()
+    }
+
+    fn calculate_total_rewards(&self) -> u32 {
+        self.achievements.iter()
+            .filter(|a| a.unlocked)
+            .map(|a| a.reward_cash)
+            .sum()
+    }
+}
+
 impl GameData {
     fn new() -> Self {
         // Create some sample inventory for testing
@@ -529,6 +828,7 @@ impl GameData {
             next_order_id: 1000,
             analytics: BusinessAnalytics::new(),
             market_conditions: MarketConditions::new(),
+            achievements: AchievementTracker::new(),
         };
 
         // Generate some initial customer orders
@@ -600,6 +900,16 @@ impl GameData {
         // Update market conditions and process events
         self.market_conditions.update_season(self.day);
         self.market_conditions.process_daily_events(self.day, &mut self.recent_activities);
+
+        // Process daily achievements
+        let orders_completed_today = 0; // TODO: Track daily completion count
+        let orders_expired_today = expired_count;
+        self.achievements.process_daily_achievements(orders_completed_today, orders_expired_today, &self.analytics, self.day);
+
+        // Check cash and inventory achievements
+        self.achievements.check_cash_achievements(self.cash, self.day, &mut self.recent_activities);
+        self.achievements.check_inventory_achievements(&self.inventory, self.day, &mut self.recent_activities);
+        self.achievements.check_seasonal_achievements(&self.market_conditions.current_season, self.achievements.seasonal_winter_profit, self.day, &mut self.recent_activities);
 
         // Add daily startup message
         let season = self.market_conditions.current_season.display();
@@ -880,6 +1190,11 @@ impl GameData {
         
         // Add money to cash
         self.cash += total_earnings;
+
+        // Check achievements
+        self.achievements.record_order_completion(self.day);
+        self.achievements.check_order_achievements(self.analytics.orders_completed, self.reputation, self.day, &mut self.recent_activities);
+        self.achievements.check_cash_achievements(self.cash, self.day, &mut self.recent_activities);
         
         // Remove the completed order
         self.customer_orders.remove(order_index);
@@ -1036,6 +1351,10 @@ impl App {
                     // Record purchase in analytics
                     self.game_data.analytics.record_purchase(purchase_cost);
                     
+                    // Check market purchase achievements
+                    let price_multiplier = self.game_data.market_conditions.get_price_multiplier(retailer);
+                    self.game_data.achievements.record_market_purchase(price_multiplier, self.game_data.day, &mut self.game_data.recent_activities);
+                    
                     // Add activity log
                     let activity = format!(
                         "💰 Purchased {} ${} card for ${}", 
@@ -1086,7 +1405,7 @@ impl App {
     fn next_menu_item(&mut self) {
         let menu_items = match self.screen {
             Screen::MainMenu => 4, // New Game, Continue, Tutorial, Quit
-            Screen::Dashboard => 7, // Market, Orders, Inventory, Analytics, Settings, Save Game, Quit
+            Screen::Dashboard => 8, // Market, Orders, Inventory, Analytics, Achievements, Settings, Save Game, Quit
             Screen::Market => 5, // 5 market items
             Screen::Orders => self.game_data.customer_orders.len().max(1), // Number of orders
             Screen::Inventory => self.game_data.inventory.len().max(1), // Number of inventory items
@@ -1098,7 +1417,7 @@ impl App {
     fn previous_menu_item(&mut self) {
         let menu_items = match self.screen {
             Screen::MainMenu => 4,
-            Screen::Dashboard => 7,
+            Screen::Dashboard => 8,
             Screen::Market => 5,
             Screen::Orders => self.game_data.customer_orders.len().max(1),
             Screen::Inventory => self.game_data.inventory.len().max(1),
@@ -1131,13 +1450,14 @@ impl App {
             }
             Screen::Dashboard => {
                 match self.selected_menu_item {
-                    0 => self.screen = Screen::Market,    // [1] Market
-                    1 => self.screen = Screen::Orders,    // [2] Orders  
-                    2 => self.screen = Screen::Inventory, // [3] Inventory
-                    3 => self.screen = Screen::Analytics, // [4] Analytics
-                    4 => self.screen = Screen::Settings,  // [5] Settings
-                    5 => { self.save_game(); },           // [6] Save Game
-                    6 => self.screen = Screen::MainMenu,  // [7] Quit to Menu
+                    0 => self.screen = Screen::Market,       // [1] Market
+                    1 => self.screen = Screen::Orders,       // [2] Orders  
+                    2 => self.screen = Screen::Inventory,    // [3] Inventory
+                    3 => self.screen = Screen::Analytics,    // [4] Analytics
+                    4 => self.screen = Screen::Achievements, // [5] Achievements
+                    5 => self.screen = Screen::Settings,     // [6] Settings
+                    6 => { self.save_game(); },              // [7] Save Game
+                    7 => self.screen = Screen::MainMenu,     // [8] Quit to Menu
                     _ => {}
                 }
             }
@@ -1297,6 +1617,10 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Result<(
                         app.selected_menu_item = 6;
                         app.select_menu_item();
                     },
+                    KeyCode::Char('8') if matches!(app.screen, Screen::Dashboard) => {
+                        app.selected_menu_item = 7;
+                        app.select_menu_item();
+                    },
                     _ => {}
                 }
             }
@@ -1316,6 +1640,7 @@ fn ui(f: &mut Frame, app: &App) {
         Screen::Orders => draw_orders(f, app),
         Screen::Inventory => draw_inventory(f, app),
         Screen::Analytics => draw_analytics(f, app),
+        Screen::Achievements => draw_achievements_screen(f, app),
         Screen::Settings => draw_placeholder(f, "Settings", "Game configuration"),
     }
 }
@@ -1439,9 +1764,10 @@ fn draw_dashboard(f: &mut Frame, app: &App) {
         "[2] Orders", 
         "[3] Inventory",
         "[4] Analytics",
-        "[5] Settings",
-        "[6] Save Game",
-        "[7] Quit to Menu",
+        "[5] Achievements",
+        "[6] Settings",
+        "[7] Save Game",
+        "[8] Quit to Menu",
     ];
 
     let menu_list_items: Vec<ListItem> = menu_items
@@ -1491,7 +1817,7 @@ fn draw_dashboard(f: &mut Frame, app: &App) {
     // Footer with controls and pause status
     let pause_indicator = if app.paused { " ⏸️ PAUSED" } else { "" };
     let footer_text = format!(
-        "↑↓ Navigate  Enter Select  [1-7] Quick Access  Space Pause  Esc Back  Q Quit{}",
+        "↑↓ Navigate  Enter Select  [1-8] Quick Access  Space Pause  Esc Back  Q Quit{}",
         pause_indicator
     );
     let footer = Paragraph::new(footer_text)
@@ -2048,6 +2374,161 @@ fn draw_analytics(f: &mut Frame, app: &App) {
     f.render_widget(footer, chunks[2]);
 }
 
+fn draw_achievements_screen(f: &mut Frame, app: &App) {
+    let size = f.area();
+    
+    // Create layout: Header, Main content (left unlocked, right in-progress), Footer
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // Header
+            Constraint::Min(0),    // Main content
+            Constraint::Length(3), // Footer
+        ])
+        .split(size);
+
+    // Header with achievement stats
+    let total_achievements = app.game_data.achievements.achievements.len();
+    let unlocked_count = app.game_data.achievements.total_unlocked;
+    let total_rewards = app.game_data.achievements.calculate_total_rewards();
+    
+    let header_text = format!(
+        "Achievements: {}/{}    Total Rewards: ${}    Completion: {:.1}%",
+        unlocked_count,
+        total_achievements,
+        total_rewards,
+        (unlocked_count as f32 / total_achievements as f32) * 100.0
+    );
+    
+    let header = Paragraph::new(header_text)
+        .block(Block::default()
+            .title("Achievement Gallery")
+            .borders(Borders::ALL)
+            .style(Style::default().fg(Color::White)))
+        .style(Style::default().fg(Color::Green))
+        .alignment(Alignment::Center);
+    
+    f.render_widget(header, chunks[0]);
+
+    // Main content area split into two columns
+    let main_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(50), // Unlocked achievements
+            Constraint::Percentage(50), // In-progress achievements
+        ])
+        .split(chunks[1]);
+
+    // Left column: Unlocked Achievements
+    let unlocked = app.game_data.achievements.get_unlocked_achievements();
+    let unlocked_items: Vec<ListItem> = if unlocked.is_empty() {
+        vec![ListItem::new(Line::from(Span::styled(
+            "No achievements unlocked yet!",
+            Style::default().fg(Color::Gray)
+        )))]
+    } else {
+        unlocked.iter().map(|achievement| {
+            let unlock_day = achievement.unlock_date.unwrap_or(0);
+            let content = format!(
+                "🏆 {} (+${})\n   {}\n   Unlocked: Day {}",
+                achievement.name,
+                achievement.reward_cash,
+                achievement.description,
+                unlock_day
+            );
+            
+            ListItem::new(Line::from(Span::styled(
+                content,
+                Style::default().fg(Color::Yellow)
+            )))
+        }).collect()
+    };
+
+    let unlocked_list = List::new(unlocked_items)
+        .block(Block::default()
+            .title(format!("🏆 Unlocked ({}/{})", unlocked_count, total_achievements))
+            .borders(Borders::ALL)
+            .style(Style::default().fg(Color::White)))
+        .style(Style::default().fg(Color::White));
+
+    f.render_widget(unlocked_list, main_chunks[0]);
+
+    // Right column: In-Progress Achievements
+    let in_progress = app.game_data.achievements.get_in_progress_achievements();
+    let mut remaining_achievements: Vec<&Achievement> = app.game_data.achievements.achievements.iter()
+        .filter(|a| !a.unlocked && a.progress == 0)
+        .take(5) // Show top 5 remaining
+        .collect();
+
+    // Combine in-progress and some remaining achievements
+    let mut progress_items: Vec<ListItem> = Vec::new();
+    
+    // Add in-progress achievements first
+    for achievement in in_progress {
+        let progress_bar_length = (achievement.progress_percentage() / 100.0 * 20.0) as usize;
+        let progress_bar = "█".repeat(progress_bar_length) + &"░".repeat(20 - progress_bar_length);
+        let content = format!(
+            "📈 {} ({}/{})\n   {}\n   [{}] {:.1}%",
+            achievement.name,
+            achievement.progress,
+            achievement.target,
+            achievement.description,
+            progress_bar,
+            achievement.progress_percentage()
+        );
+        
+        progress_items.push(ListItem::new(Line::from(Span::styled(
+            content,
+            Style::default().fg(Color::Cyan)
+        ))));
+    }
+
+    // Add some locked achievements
+    remaining_achievements.truncate(5 - progress_items.len());
+    for achievement in remaining_achievements {
+        let content = format!(
+            "🔒 {} (Reward: ${})\n   {}\n   Progress: {}/{}",
+            achievement.name,
+            achievement.reward_cash,
+            achievement.description,
+            achievement.progress,
+            achievement.target
+        );
+        
+        progress_items.push(ListItem::new(Line::from(Span::styled(
+            content,
+            Style::default().fg(Color::Gray)
+        ))));
+    }
+
+    if progress_items.is_empty() {
+        progress_items.push(ListItem::new(Line::from(Span::styled(
+            "All achievements unlocked!\nCongratulations!",
+            Style::default().fg(Color::Green)
+        ))));
+    }
+
+    let progress_list = List::new(progress_items)
+        .block(Block::default()
+            .title("📊 Progress & Locked")
+            .borders(Borders::ALL)
+            .style(Style::default().fg(Color::White)))
+        .style(Style::default().fg(Color::White));
+
+    f.render_widget(progress_list, main_chunks[1]);
+
+    // Footer with controls
+    let footer_text = "View your accomplishments and track progress • Esc Back";
+    let footer = Paragraph::new(footer_text)
+        .block(Block::default()
+            .borders(Borders::ALL)
+            .style(Style::default().fg(Color::White)))
+        .style(Style::default().fg(Color::Gray))
+        .alignment(Alignment::Center);
+
+    f.render_widget(footer, chunks[2]);
+}
+
 fn draw_placeholder(f: &mut Frame, title: &str, description: &str) {
     let size = f.area();
 
@@ -2429,5 +2910,47 @@ mod tests {
             // Should be different from base price due to event
             assert_ne!(multiplier, 1.5); // 1.5 is winter Amazon base
         }
+    }
+
+    #[test]
+    fn test_achievement_system() {
+        let mut game_data = GameData::new();
+        let initial_achievements = game_data.achievements.total_unlocked;
+        
+        // Test cash achievements
+        game_data.cash = 10000;
+        game_data.achievements.check_cash_achievements(game_data.cash, game_data.day, &mut game_data.recent_activities);
+        assert!(game_data.achievements.total_unlocked > initial_achievements);
+        
+        // Test order achievements
+        game_data.analytics.orders_completed = 1;
+        game_data.achievements.check_order_achievements(game_data.analytics.orders_completed, game_data.reputation, game_data.day, &mut game_data.recent_activities);
+        
+        // Test reputation achievement
+        game_data.reputation = 5;
+        game_data.achievements.check_order_achievements(0, game_data.reputation, game_data.day, &mut game_data.recent_activities);
+        
+        // Check if any achievement unlocked for reputation
+        let legendary_unlocked = game_data.achievements.achievements.iter()
+            .find(|a| a.achievement_type == AchievementType::LegendaryStatus)
+            .map(|a| a.unlocked)
+            .unwrap_or(false);
+        assert!(legendary_unlocked);
+        
+        // Test inventory achievements
+        let total_cards: u32 = game_data.inventory.iter().map(|item| item.quantity).sum();
+        assert!(total_cards > 0); // Should have sample inventory
+        
+        // Test progress tracking
+        let in_progress = game_data.achievements.get_in_progress_achievements();
+        assert!(!in_progress.is_empty()); // Should have some progress
+        
+        // Test unlocked achievements
+        let unlocked = game_data.achievements.get_unlocked_achievements();
+        assert!(!unlocked.is_empty()); // Should have unlocked some
+        
+        // Test total rewards calculation
+        let total_rewards = game_data.achievements.calculate_total_rewards();
+        assert!(total_rewards > 0); // Should have earned some rewards
     }
 }

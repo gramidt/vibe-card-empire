@@ -1677,17 +1677,18 @@ impl GameData {
         // Generate new orders based on reputation and market conditions
         // Higher reputation = more frequent orders
         let base_order_chance = match self.reputation {
-            5 => self.day % 2 == 0,   // Every other day
-            4 => self.day % 3 == 0,   // Every 3 days
-            3 => self.day % 3 == 0,   // Every 3 days (default)
-            2 => self.day % 4 == 0,   // Every 4 days
-            1 => self.day % 5 == 0,   // Every 5 days
+            5 => true,                // Every day (highest reputation)
+            4 => self.day % 2 == 0,   // Every other day
+            3 => self.day % 2 == 0,   // Every other day (default - more frequent now)
+            2 => self.day % 3 == 0,   // Every 3 days
+            1 => self.day % 4 == 0,   // Every 4 days
             _ => false,
         };
         
-        // Apply market demand modifier
+        // Apply market demand modifier for additional orders
         let market_boost = self.market_conditions.base_demand_modifier > 1.0;
-        let order_chance = base_order_chance || (market_boost && self.day % 4 == 0);
+        let extra_market_chance = market_boost && self.day % 2 == 1; // Additional orders on alternate days during good markets
+        let order_chance = base_order_chance || extra_market_chance;
         
         if order_chance {
             self.generate_random_order();

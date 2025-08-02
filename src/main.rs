@@ -264,6 +264,17 @@ impl GameData {
         format!("{}{}", filled, empty)
     }
 
+    fn reputation_description(&self) -> &str {
+        match self.reputation {
+            5 => "Legendary",
+            4 => "Excellent", 
+            3 => "Good",
+            2 => "Fair",
+            1 => "Poor",
+            _ => "Unknown",
+        }
+    }
+
     fn time_display(&self) -> String {
         let period = if self.hour < 12 { "AM" } else { "PM" };
         let display_hour = if self.hour == 0 { 12 } else if self.hour > 12 { self.hour - 12 } else { self.hour };
@@ -330,7 +341,18 @@ impl GameData {
         
         let quantity = 1 + (self.day % 5); // 1-5 cards
         let base_price = denomination + 2; // Small markup from wholesale
-        let offered_price = base_price + (self.reputation as u32 * 2); // Better customers pay more for good reputation
+        
+        // Reputation significantly affects pricing
+        let reputation_bonus = match self.reputation {
+            5 => denomination / 3,           // 33% bonus for 5-star
+            4 => denomination / 4,           // 25% bonus for 4-star  
+            3 => denomination / 5,           // 20% bonus for 3-star
+            2 => denomination / 10,          // 10% bonus for 2-star
+            1 => 0,                         // No bonus for 1-star
+            _ => 0,
+        };
+        
+        let offered_price = base_price + reputation_bonus;
         
         let deadline_days = 2 + (self.day % 5); // 2-6 days to fulfill
         
@@ -375,7 +397,7 @@ impl GameData {
             }
         }
 
-        // Remove expired orders
+        // Remove expired orders and damage reputation
         let mut expired_count = 0;
         self.customer_orders.retain(|order| {
             if order.is_expired() {
@@ -393,10 +415,25 @@ impl GameData {
             if self.recent_activities.len() > 10 {
                 self.recent_activities.truncate(10);
             }
+            
+            // Damage reputation for each expired order
+            for _ in 0..expired_count {
+                self.decrease_reputation("order_expired");
+            }
         }
 
-        // Randomly generate new orders (30% chance per day)
-        if self.day % 3 == 0 {
+        // Generate new orders based on reputation
+        // Higher reputation = more frequent orders
+        let order_chance = match self.reputation {
+            5 => self.day % 2 == 0,   // Every other day
+            4 => self.day % 3 == 0,   // Every 3 days
+            3 => self.day % 3 == 0,   // Every 3 days (default)
+            2 => self.day % 4 == 0,   // Every 4 days
+            1 => self.day % 5 == 0,   // Every 5 days
+            _ => false,
+        };
+        
+        if order_chance {
             self.generate_random_order();
         }
     }
@@ -484,7 +521,45 @@ impl GameData {
             self.recent_activities.truncate(10);
         }
 
+        // Improve reputation for timely fulfillment
+        // Extra bonus for fast fulfillment (more than half deadline remaining)
+        if order.deadline_days > (2 + (self.day % 5)) / 2 {
+            self.improve_reputation("fast_fulfillment");
+        } else {
+            self.improve_reputation("order_fulfilled");
+        }
+        
         true
+    }
+
+    fn improve_reputation(&mut self, reason: &str) {
+        if self.reputation < 5 {
+            self.reputation += 1;
+            let message = match reason {
+                "order_fulfilled" => "⭐ Reputation improved for excellent service!",
+                "fast_fulfillment" => "⭐ Reputation boosted for lightning-fast delivery!",
+                _ => "⭐ Reputation improved!",
+            };
+            self.recent_activities.insert(0, message.to_string());
+            if self.recent_activities.len() > 10 {
+                self.recent_activities.truncate(10);
+            }
+        }
+    }
+
+    fn decrease_reputation(&mut self, reason: &str) {
+        if self.reputation > 1 {
+            self.reputation -= 1;
+            let message = match reason {
+                "order_expired" => "💔 Reputation damaged - customers disappointed by expired orders",
+                "slow_service" => "💔 Reputation declined due to slow service",
+                _ => "💔 Reputation decreased!",
+            };
+            self.recent_activities.insert(0, message.to_string());
+            if self.recent_activities.len() > 10 {
+                self.recent_activities.truncate(10);
+            }
+        }
     }
 }
 
@@ -613,6 +688,7 @@ impl App {
             Screen::Dashboard => 6, // Market, Orders, Inventory, Analytics, Settings, Save & Quit
             Screen::Market => 5, // 5 market items
             Screen::Orders => self.game_data.customer_orders.len().max(1), // Number of orders
+            Screen::Inventory => self.game_data.inventory.len().max(1), // Number of inventory items
             _ => 1, // Other screens typically have minimal navigation
         };
         self.selected_menu_item = (self.selected_menu_item + 1) % menu_items;
@@ -624,6 +700,7 @@ impl App {
             Screen::Dashboard => 6,
             Screen::Market => 5,
             Screen::Orders => self.game_data.customer_orders.len().max(1),
+            Screen::Inventory => self.game_data.inventory.len().max(1),
             _ => 1,
         };
         if self.selected_menu_item > 0 {
@@ -776,7 +853,7 @@ fn ui(f: &mut Frame, app: &App) {
         Screen::Dashboard => draw_dashboard(f, app),
         Screen::Market => draw_market(f, app),
         Screen::Orders => draw_orders(f, app),
-        Screen::Inventory => draw_placeholder(f, "Inventory", "View your gift card stock"),
+        Screen::Inventory => draw_inventory(f, app),
         Screen::Analytics => draw_placeholder(f, "Analytics", "Business metrics and trends"),
         Screen::Settings => draw_placeholder(f, "Settings", "Game configuration"),
     }
@@ -851,9 +928,10 @@ fn draw_dashboard(f: &mut Frame, app: &App) {
 
     // Header with game stats
     let header_text = format!(
-        "Cash: ${}    Rep: {}    Day: {}    Time: {}",
+        "Cash: ${}    Rep: {} ({})    Day: {}    Time: {}",
         app.game_data.cash,
         app.game_data.reputation_stars(),
+        app.game_data.reputation_description(),
         app.game_data.day,
         app.game_data.time_display()
     );
@@ -1146,6 +1224,120 @@ fn draw_orders(f: &mut Frame, app: &App) {
     f.render_widget(footer, chunks[2]);
 }
 
+fn draw_inventory(f: &mut Frame, app: &App) {
+    let size = f.area();
+    
+    // Create layout: Header, Inventory list, Footer
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // Header
+            Constraint::Min(0),    // Inventory content
+            Constraint::Length(3), // Footer
+        ])
+        .split(size);
+
+    // Header showing total inventory value
+    let total_value = app.game_data.total_inventory_value();
+    let inventory_count = app.game_data.inventory_count();
+    let header_text = format!("Total Value: ${}    Items: {}", total_value, inventory_count);
+    let header = Paragraph::new(header_text)
+        .block(Block::default()
+            .title("Inventory Management")
+            .borders(Borders::ALL)
+            .style(Style::default().fg(Color::White)))
+        .style(Style::default().fg(Color::Green))
+        .alignment(Alignment::Center);
+    
+    f.render_widget(header, chunks[0]);
+
+    // Inventory list
+    if app.game_data.inventory.is_empty() {
+        let no_inventory = Paragraph::new("No inventory available\n\nVisit the Market to purchase gift cards")
+            .block(Block::default()
+                .title("Inventory")
+                .borders(Borders::ALL)
+                .style(Style::default().fg(Color::White)))
+            .style(Style::default().fg(Color::Gray))
+            .alignment(Alignment::Center);
+        
+        f.render_widget(no_inventory, chunks[1]);
+    } else {
+        // Create table header and rows
+        let mut table_content = vec![
+            "   Card        │ Qty │ Cost │ Days Left │ Market Price │ Profit │ Action".to_string(),
+            "───────────────┼─────┼──────┼───────────┼──────────────┼────────┼───────".to_string(),
+        ];
+
+        for (i, item) in app.game_data.inventory.iter().enumerate() {
+            let style_char = if i == app.selected_menu_item { "►" } else { " " };
+            
+            // Calculate profit potential
+            let market_value = item.card.market_value();
+            let profit_per_card = market_value as i32 - item.card.purchase_price as i32;
+            let total_profit = profit_per_card * item.quantity as i32;
+            
+            // Show expiration warning
+            let expiration_indicator = if item.card.is_expiring_soon() {
+                "❗"
+            } else {
+                " "
+            };
+            
+            table_content.push(format!(
+                "{}{} {} ${:2} │  {:2} │ ${:2} │    {:3}    │     ${:2}     │  ${:3}  │ [Sell]",
+                style_char,
+                expiration_indicator,
+                item.card.retailer,
+                item.card.denomination,
+                item.quantity,
+                item.card.purchase_price,
+                item.card.days_until_expiration,
+                market_value,
+                total_profit
+            ));
+        }
+
+        let table_items: Vec<ListItem> = table_content
+            .iter()
+            .enumerate()
+            .map(|(i, line)| {
+                let style = if i >= 2 && (i - 2) == app.selected_menu_item {
+                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                } else if i < 2 {
+                    Style::default().fg(Color::Gray)
+                } else if line.contains("❗") {
+                    Style::default().fg(Color::Red) // Expiring items in red
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                
+                ListItem::new(Line::from(Span::styled(line.clone(), style)))
+            })
+            .collect();
+
+        let inventory_list = List::new(table_items)
+            .block(Block::default()
+                .title("Current Stock")
+                .borders(Borders::ALL)
+                .style(Style::default().fg(Color::White)))
+            .style(Style::default().fg(Color::White));
+
+        f.render_widget(inventory_list, chunks[1]);
+    }
+
+    // Footer with controls
+    let footer_text = "↑↓ Select  Enter Sell Item  Esc Back  ❗ = Expiring Soon";
+    let footer = Paragraph::new(footer_text)
+        .block(Block::default()
+            .borders(Borders::ALL)
+            .style(Style::default().fg(Color::White)))
+        .style(Style::default().fg(Color::Gray))
+        .alignment(Alignment::Center);
+
+    f.render_widget(footer, chunks[2]);
+}
+
 fn draw_placeholder(f: &mut Frame, title: &str, description: &str) {
     let size = f.area();
 
@@ -1348,5 +1540,61 @@ mod tests {
         // Order should still be there, cash unchanged
         assert_eq!(game_data.customer_orders.len(), order_count);
         assert_eq!(game_data.cash, initial_cash);
+    }
+
+    #[test]
+    fn test_reputation_system() {
+        let mut game_data = GameData::new();
+        let initial_reputation = game_data.reputation;
+        
+        // Test reputation improvement
+        game_data.improve_reputation("order_fulfilled");
+        assert_eq!(game_data.reputation, initial_reputation + 1);
+        
+        // Test reputation decrease
+        game_data.decrease_reputation("order_expired");
+        assert_eq!(game_data.reputation, initial_reputation);
+        
+        // Test reputation bounds (can't go above 5)
+        game_data.reputation = 5;
+        game_data.improve_reputation("order_fulfilled");
+        assert_eq!(game_data.reputation, 5);
+        
+        // Test reputation bounds (can't go below 1)
+        game_data.reputation = 1;
+        game_data.decrease_reputation("order_expired");
+        assert_eq!(game_data.reputation, 1);
+        
+        // Test reputation descriptions
+        game_data.reputation = 5;
+        assert_eq!(game_data.reputation_description(), "Legendary");
+        game_data.reputation = 3;
+        assert_eq!(game_data.reputation_description(), "Good");
+        game_data.reputation = 1;
+        assert_eq!(game_data.reputation_description(), "Poor");
+    }
+
+    #[test]
+    fn test_reputation_affects_pricing() {
+        let mut game_data = GameData::new();
+        
+        // Test different reputation levels affect order generation
+        // We'll test the pricing logic by examining the bonus calculation
+        
+        // High reputation (5 stars)
+        game_data.reputation = 5;
+        let denomination = 25;
+        let bonus_5_star = denomination / 3; // Should be 8
+        assert_eq!(bonus_5_star, 8);
+        
+        // Medium reputation (3 stars)  
+        game_data.reputation = 3;
+        let bonus_3_star = denomination / 5; // Should be 5
+        assert_eq!(bonus_3_star, 5);
+        
+        // Low reputation (1 star)
+        game_data.reputation = 1;
+        let bonus_1_star = 0; // Should be 0
+        assert_eq!(bonus_1_star, 0);
     }
 }

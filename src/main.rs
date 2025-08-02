@@ -2049,6 +2049,66 @@ impl App {
         }
     }
 
+    fn sell_inventory_item(&mut self) {
+        if !matches!(self.screen, Screen::Inventory) {
+            return;
+        }
+
+        if self.game_data.inventory.is_empty() {
+            return;
+        }
+
+        // Ensure selected item is within bounds
+        let inventory_index = self.selected_menu_item.min(self.game_data.inventory.len() - 1);
+        
+        // Get the selected inventory item
+        let item = &self.game_data.inventory[inventory_index];
+        
+        // Calculate market value (sell at slightly below retail value)
+        let retail_value = item.card.denomination;
+        let market_value = (retail_value as f32 * 0.85) as u32; // Sell at 85% of face value
+        let total_value = market_value * item.quantity;
+        
+        // Calculate profit/loss
+        let total_cost = item.card.purchase_price * item.quantity;
+        let profit = total_value as i32 - total_cost as i32;
+        
+        // Add cash to player
+        self.game_data.cash += total_value;
+        
+        // Record the sale in analytics
+        self.game_data.analytics.cards_sold += item.quantity;
+        self.game_data.analytics.total_revenue += total_value;
+        
+        // Play success sound
+        self.sound_effects.play(SoundType::Sale);
+        
+        // Add activity log
+        let activity = format!(
+            "💰 Sold {}x {} ${} cards for ${} ({}${} profit)",
+            item.quantity,
+            item.card.retailer,
+            item.card.denomination,
+            total_value,
+            if profit >= 0 { "+" } else { "" },
+            profit
+        );
+        self.game_data.recent_activities.insert(0, activity);
+        if self.game_data.recent_activities.len() > 10 {
+            self.game_data.recent_activities.truncate(10);
+        }
+        
+        // Remove the sold item from inventory
+        self.game_data.inventory.remove(inventory_index);
+        
+        // Adjust selection if we're now beyond the list
+        if self.selected_menu_item >= self.game_data.inventory.len() && !self.game_data.inventory.is_empty() {
+            self.selected_menu_item = self.game_data.inventory.len() - 1;
+        } else if self.game_data.inventory.is_empty() {
+            self.selected_menu_item = 0;
+        }
+    }
+
     fn next_menu_item(&mut self) {
         let menu_items = match self.screen {
             Screen::MainMenu => 4, // New Game, Continue, Tutorial, Quit
@@ -2132,6 +2192,11 @@ impl App {
             Screen::Orders => {
                 // Fulfill customer order (stay on orders screen)
                 self.fulfill_customer_order();
+                return; // Don't reset selection
+            }
+            Screen::Inventory => {
+                // Sell inventory item (stay on inventory screen)
+                self.sell_inventory_item();
                 return; // Don't reset selection
             }
             Screen::RandomEvent => {

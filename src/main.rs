@@ -1690,15 +1690,14 @@ impl GameData {
     }
 
     fn can_fulfill_order(&self, order: &CustomerOrder) -> bool {
-        // Check if we have the required cards in inventory
-        for item in &self.inventory {
-            if item.card.retailer == order.retailer && 
-               item.card.denomination == order.denomination &&
-               item.quantity >= order.quantity {
-                return true;
-            }
-        }
-        false
+        // Check if we have enough cards total across all inventory items
+        let total_available = self.inventory.iter()
+            .filter(|item| item.card.retailer == order.retailer && 
+                          item.card.denomination == order.denomination)
+            .map(|item| item.quantity)
+            .sum::<u32>();
+            
+        total_available >= order.quantity
     }
 
     fn fulfill_order(&mut self, order_index: usize) -> bool {

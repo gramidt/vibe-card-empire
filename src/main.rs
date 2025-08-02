@@ -147,6 +147,96 @@ struct GameData {
     inventory: Vec<InventoryItem>,
     customer_orders: VecDeque<CustomerOrder>,
     next_order_id: u32,
+    analytics: BusinessAnalytics,
+}
+
+#[derive(Debug)]
+struct BusinessAnalytics {
+    total_revenue: u32,
+    total_purchases: u32,
+    orders_completed: u32,
+    orders_expired: u32,
+    best_day_revenue: u32,
+    cards_sold: u32,
+    cards_expired: u32,
+    daily_revenues: Vec<u32>, // Track daily performance
+    profit_margins: Vec<f32>, // Track efficiency over time
+}
+
+impl BusinessAnalytics {
+    fn new() -> Self {
+        Self {
+            total_revenue: 0,
+            total_purchases: 0,
+            orders_completed: 0,
+            orders_expired: 0,
+            best_day_revenue: 0,
+            cards_sold: 0,
+            cards_expired: 0,
+            daily_revenues: vec![0], // Start with day 1
+            profit_margins: Vec::new(),
+        }
+    }
+
+    fn record_purchase(&mut self, amount: u32) {
+        self.total_purchases += amount;
+    }
+
+    fn record_sale(&mut self, revenue: u32, cost: u32, cards_sold: u32) {
+        self.total_revenue += revenue;
+        self.orders_completed += 1;
+        self.cards_sold += cards_sold;
+        
+        // Calculate profit margin for this sale
+        if revenue > 0 {
+            let profit_margin = ((revenue as f32 - cost as f32) / revenue as f32) * 100.0;
+            self.profit_margins.push(profit_margin);
+        }
+        
+        // Update daily revenue
+        if let Some(today_revenue) = self.daily_revenues.last_mut() {
+            *today_revenue += revenue;
+            self.best_day_revenue = self.best_day_revenue.max(*today_revenue);
+        }
+    }
+
+    fn record_expired_order(&mut self) {
+        self.orders_expired += 1;
+    }
+
+    fn record_expired_cards(&mut self, count: u32) {
+        self.cards_expired += count;
+    }
+
+    fn start_new_day(&mut self) {
+        self.daily_revenues.push(0);
+        // Keep only last 30 days
+        if self.daily_revenues.len() > 30 {
+            self.daily_revenues.remove(0);
+        }
+    }
+
+    fn average_profit_margin(&self) -> f32 {
+        if self.profit_margins.is_empty() {
+            0.0
+        } else {
+            self.profit_margins.iter().sum::<f32>() / self.profit_margins.len() as f32
+        }
+    }
+
+    fn recent_daily_average(&self) -> f32 {
+        if self.daily_revenues.len() <= 1 {
+            return 0.0;
+        }
+        
+        let recent_days = self.daily_revenues.len().min(7); // Last 7 days
+        let sum: u32 = self.daily_revenues.iter().rev().take(recent_days).sum();
+        sum as f32 / recent_days as f32
+    }
+
+    fn total_profit(&self) -> i32 {
+        self.total_revenue as i32 - self.total_purchases as i32
+    }
 }
 
 impl GameData {
@@ -189,6 +279,7 @@ impl GameData {
             inventory: sample_inventory,
             customer_orders: VecDeque::new(),
             next_order_id: 1000,
+            analytics: BusinessAnalytics::new(),
         };
 
         // Generate some initial customer orders
@@ -237,6 +328,9 @@ impl GameData {
         });
 
         if expired_count > 0 {
+            // Record expired cards in analytics
+            self.analytics.record_expired_cards(expired_count);
+            
             self.recent_activities.insert(0, format!(
                 "❌ Lost {} cards worth ${} to expiration", 
                 expired_count, expired_value
@@ -250,6 +344,9 @@ impl GameData {
 
         // Process customer orders aging
         self.process_order_aging();
+
+        // Start new day in analytics
+        self.analytics.start_new_day();
 
         // Add daily startup message
         self.recent_activities.insert(0, format!("🌅 Day {} begins", self.day));
@@ -409,6 +506,11 @@ impl GameData {
         });
 
         if expired_count > 0 {
+            // Record expired orders in analytics
+            for _ in 0..expired_count {
+                self.analytics.record_expired_order();
+            }
+            
             self.recent_activities.insert(0, format!(
                 "⏰ {} customer orders expired", expired_count
             ));
@@ -504,6 +606,9 @@ impl GameData {
         let total_earnings = order.total_offered();
         let cost_basis = order.quantity * (order.denomination - 5); // Estimate wholesale cost
         let profit = total_earnings as i32 - cost_basis as i32;
+        
+        // Record sale in analytics
+        self.analytics.record_sale(total_earnings, cost_basis, order.quantity);
         
         // Add money to cash
         self.cash += total_earnings;
@@ -634,6 +739,9 @@ impl App {
                     let card = GiftCard::new(retailer, *denomination, *cost, expiration_days);
                     
                     self.game_data.add_to_inventory(card, 1);
+                    
+                    // Record purchase in analytics
+                    self.game_data.analytics.record_purchase(purchase_cost);
                     
                     // Add activity log
                     let activity = format!(
@@ -854,7 +962,7 @@ fn ui(f: &mut Frame, app: &App) {
         Screen::Market => draw_market(f, app),
         Screen::Orders => draw_orders(f, app),
         Screen::Inventory => draw_inventory(f, app),
-        Screen::Analytics => draw_placeholder(f, "Analytics", "Business metrics and trends"),
+        Screen::Analytics => draw_analytics(f, app),
         Screen::Settings => draw_placeholder(f, "Settings", "Game configuration"),
     }
 }
@@ -1338,6 +1446,222 @@ fn draw_inventory(f: &mut Frame, app: &App) {
     f.render_widget(footer, chunks[2]);
 }
 
+fn draw_analytics(f: &mut Frame, app: &App) {
+    let size = f.area();
+    
+    // Create layout: Header, Main content (left metrics, right charts), Footer
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // Header
+            Constraint::Min(0),    // Main content
+            Constraint::Length(3), // Footer
+        ])
+        .split(size);
+
+    // Header
+    let analytics = &app.game_data.analytics;
+    let total_profit = analytics.total_profit();
+    let profit_color = if total_profit >= 0 { Color::Green } else { Color::Red };
+    
+    let header_text = format!(
+        "Total Profit: ${:+}    Revenue: ${}    Orders: {}    Avg Margin: {:.1}%",
+        total_profit,
+        analytics.total_revenue,
+        analytics.orders_completed,
+        analytics.average_profit_margin()
+    );
+    
+    let header = Paragraph::new(header_text)
+        .block(Block::default()
+            .title("Business Analytics Dashboard")
+            .borders(Borders::ALL)
+            .style(Style::default().fg(Color::White)))
+        .style(Style::default().fg(profit_color))
+        .alignment(Alignment::Center);
+    
+    f.render_widget(header, chunks[0]);
+
+    // Main content area split into two columns
+    let main_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(50), // Key metrics
+            Constraint::Percentage(50), // Performance data
+        ])
+        .split(chunks[1]);
+
+    // Left column: Key Business Metrics
+    let key_metrics = vec![
+        format!("💰 Total Revenue:          ${}", analytics.total_revenue),
+        format!("💳 Total Purchases:        ${}", analytics.total_purchases),
+        format!("📈 Net Profit:            ${:+}", total_profit),
+        format!(""),
+        format!("📋 Orders Completed:       {}", analytics.orders_completed),
+        format!("⏰ Orders Expired:         {}", analytics.orders_expired),
+        format!("📊 Success Rate:          {:.1}%", {
+            let total_orders = analytics.orders_completed + analytics.orders_expired;
+            if total_orders > 0 {
+                (analytics.orders_completed as f32 / total_orders as f32) * 100.0
+            } else {
+                0.0
+            }
+        }),
+        format!(""),
+        format!("🎯 Cards Sold:            {}", analytics.cards_sold),
+        format!("💀 Cards Expired:         {}", analytics.cards_expired),
+        format!("🔄 Card Efficiency:       {:.1}%", {
+            let total_cards = analytics.cards_sold + analytics.cards_expired;
+            if total_cards > 0 {
+                (analytics.cards_sold as f32 / total_cards as f32) * 100.0
+            } else {
+                0.0
+            }
+        }),
+        format!(""),
+        format!("⭐ Best Day Revenue:      ${}", analytics.best_day_revenue),
+        format!("📅 Recent Daily Avg:      ${:.0}", analytics.recent_daily_average()),
+    ];
+
+    let metrics_items: Vec<ListItem> = key_metrics
+        .iter()
+        .map(|metric| {
+            let style = if metric.contains("Net Profit") {
+                if total_profit >= 0 {
+                    Style::default().fg(Color::Green)
+                } else {
+                    Style::default().fg(Color::Red)
+                }
+            } else if metric.is_empty() {
+                Style::default().fg(Color::Gray)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            
+            ListItem::new(Line::from(Span::styled(metric.clone(), style)))
+        })
+        .collect();
+
+    let metrics_list = List::new(metrics_items)
+        .block(Block::default()
+            .title("Key Metrics")
+            .borders(Borders::ALL)
+            .style(Style::default().fg(Color::White)))
+        .style(Style::default().fg(Color::White));
+
+    f.render_widget(metrics_list, main_chunks[0]);
+
+    // Right column: Performance Trends and Daily Revenue
+    let mut performance_data = vec![
+        format!("📊 RECENT DAILY REVENUES"),
+        format!("────────────────────────"),
+    ];
+
+    // Show last 7 days of revenue (or whatever we have)
+    let recent_days = analytics.daily_revenues.len().min(7);
+    let current_day = app.game_data.day;
+    
+    for (i, &revenue) in analytics.daily_revenues.iter().rev().take(recent_days).enumerate() {
+        let day_num = current_day.saturating_sub(i as u32);
+        let bar_length = if analytics.best_day_revenue > 0 {
+            ((revenue as f32 / analytics.best_day_revenue as f32) * 20.0) as usize
+        } else {
+            0
+        };
+        let bar = "█".repeat(bar_length) + &"░".repeat(20 - bar_length);
+        
+        performance_data.push(format!(
+            "Day {:2} │ ${:4} │ {}",
+            day_num, revenue, bar
+        ));
+    }
+
+    performance_data.push(format!(""));
+    performance_data.push(format!("📈 PROFIT MARGIN TRENDS"));
+    performance_data.push(format!("───────────────────────"));
+
+    // Show recent profit margins
+    let recent_margins = analytics.profit_margins.len().min(5);
+    if recent_margins > 0 {
+        for (i, &margin) in analytics.profit_margins.iter().rev().take(recent_margins).enumerate() {
+            let trend_indicator = if i > 0 && i < analytics.profit_margins.len() {
+                let prev_margin = analytics.profit_margins[analytics.profit_margins.len() - i];
+                if margin > prev_margin { "↗" } 
+                else if margin < prev_margin { "↘" } 
+                else { "→" }
+            } else {
+                "→"
+            };
+            
+            performance_data.push(format!(
+                "Sale {:2} │ {:5.1}% │ {}",
+                analytics.profit_margins.len() - i, margin, trend_indicator
+            ));
+        }
+    } else {
+        performance_data.push(format!("No sales data available yet"));
+    }
+
+    performance_data.push(format!(""));
+    performance_data.push(format!("🎯 STRATEGIC INSIGHTS"));
+    performance_data.push(format!("──────────────────"));
+
+    // Add some strategic insights based on the data
+    if analytics.orders_completed > 0 {
+        let avg_revenue_per_order = analytics.total_revenue / analytics.orders_completed;
+        performance_data.push(format!("Avg Revenue/Order: ${}", avg_revenue_per_order));
+    }
+    
+    if total_profit < 0 {
+        performance_data.push(format!("⚠️  Operating at a loss"));
+        performance_data.push(format!("   Focus on higher margins"));
+    } else if analytics.average_profit_margin() < 15.0 {
+        performance_data.push(format!("⚠️  Low profit margins"));
+        performance_data.push(format!("   Seek better deals"));
+    } else {
+        performance_data.push(format!("✅ Healthy profit margins"));
+    }
+
+    let performance_items: Vec<ListItem> = performance_data
+        .iter()
+        .map(|item| {
+            let style = if item.contains("REVENUES") || item.contains("TRENDS") || item.contains("INSIGHTS") {
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            } else if item.contains("─") {
+                Style::default().fg(Color::Gray)
+            } else if item.contains("⚠️") {
+                Style::default().fg(Color::Red)
+            } else if item.contains("✅") {
+                Style::default().fg(Color::Green)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            
+            ListItem::new(Line::from(Span::styled(item.clone(), style)))
+        })
+        .collect();
+
+    let performance_list = List::new(performance_items)
+        .block(Block::default()
+            .title("Performance Analysis")
+            .borders(Borders::ALL)
+            .style(Style::default().fg(Color::White)))
+        .style(Style::default().fg(Color::White));
+
+    f.render_widget(performance_list, main_chunks[1]);
+
+    // Footer with controls
+    let footer_text = "View comprehensive business metrics and trends • Esc Back";
+    let footer = Paragraph::new(footer_text)
+        .block(Block::default()
+            .borders(Borders::ALL)
+            .style(Style::default().fg(Color::White)))
+        .style(Style::default().fg(Color::Gray))
+        .alignment(Alignment::Center);
+
+    f.render_widget(footer, chunks[2]);
+}
+
 fn draw_placeholder(f: &mut Frame, title: &str, description: &str) {
     let size = f.area();
 
@@ -1596,5 +1920,44 @@ mod tests {
         game_data.reputation = 1;
         let bonus_1_star = 0; // Should be 0
         assert_eq!(bonus_1_star, 0);
+    }
+
+    #[test]
+    fn test_analytics_tracking() {
+        let mut game_data = GameData::new();
+        let initial_purchases = game_data.analytics.total_purchases;
+        let initial_revenue = game_data.analytics.total_revenue;
+        
+        // Test purchase tracking
+        game_data.analytics.record_purchase(100);
+        assert_eq!(game_data.analytics.total_purchases, initial_purchases + 100);
+        
+        // Test sale tracking
+        game_data.analytics.record_sale(150, 100, 2);
+        assert_eq!(game_data.analytics.total_revenue, initial_revenue + 150);
+        assert_eq!(game_data.analytics.orders_completed, 1);
+        assert_eq!(game_data.analytics.cards_sold, 2);
+        
+        // Test profit calculation
+        let total_profit = game_data.analytics.total_profit();
+        assert_eq!(total_profit, 150i32 - (initial_purchases + 100) as i32);
+        
+        // Test profit margin calculation
+        let avg_margin = game_data.analytics.average_profit_margin();
+        assert!(avg_margin > 0.0);
+        assert!(avg_margin < 100.0);
+        
+        // Test expired order tracking
+        game_data.analytics.record_expired_order();
+        assert_eq!(game_data.analytics.orders_expired, 1);
+        
+        // Test expired cards tracking
+        game_data.analytics.record_expired_cards(3);
+        assert_eq!(game_data.analytics.cards_expired, 3);
+        
+        // Test daily revenue tracking
+        let initial_days = game_data.analytics.daily_revenues.len();
+        game_data.analytics.start_new_day();
+        assert_eq!(game_data.analytics.daily_revenues.len(), initial_days + 1);
     }
 }

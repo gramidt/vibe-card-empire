@@ -8,7 +8,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Alignment},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph},
+    widgets::{Block, Borders, List, ListItem, Paragraph, Table, Row, Cell, Wrap},
     Frame, Terminal,
 };
 use std::{error::Error, io, time::{Duration, Instant}, fs};
@@ -136,6 +136,7 @@ enum Screen {
     Analytics,
     Achievements,
     Settings,
+    RandomEvent,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -984,6 +985,20 @@ impl RandomEvent {
 
         (self.cash_impact, self.reputation_impact, temp_modifiers)
     }
+    
+    fn get_choices(&self) -> Vec<&str> {
+        let mut choices = Vec::new();
+        if let Some(choice) = &self.choice_a {
+            choices.push(choice.as_str());
+        }
+        if let Some(choice) = &self.choice_b {
+            choices.push(choice.as_str());
+        }
+        if let Some(choice) = &self.choice_c {
+            choices.push(choice.as_str());
+        }
+        choices
+    }
 }
 
 
@@ -1760,6 +1775,20 @@ impl App {
             self.last_time_update = now;
         }
     }
+    
+    fn check_for_active_events(&mut self) {
+        // Check if we need to switch to random event screen for player choice
+        if self.game_data.random_events.player_choice_pending && 
+           !matches!(self.screen, Screen::RandomEvent) {
+            self.screen = Screen::RandomEvent;
+            self.selected_menu_item = 0; // Reset selection
+        } else if !self.game_data.random_events.player_choice_pending && 
+                  matches!(self.screen, Screen::RandomEvent) {
+            // Return to dashboard if event is resolved
+            self.screen = Screen::Dashboard;
+            self.selected_menu_item = 0;
+        }
+    }
 
     fn toggle_pause(&mut self) {
         if !matches!(self.screen, Screen::MainMenu) {
@@ -1859,6 +1888,40 @@ impl App {
             self.selected_menu_item = 0;
         }
     }
+    
+    fn handle_random_event_choice(&mut self) {
+        // Make choice on active random event
+        if let Some((cash, reputation, modifiers)) = self.game_data.random_events.make_choice(self.selected_menu_item) {
+            // Apply impacts immediately
+            if cash != 0 {
+                if cash > 0 {
+                    self.game_data.cash = self.game_data.cash.saturating_add(cash as u32);
+                } else {
+                    self.game_data.cash = self.game_data.cash.saturating_sub((-cash) as u32);
+                }
+            }
+            
+            if reputation != 0 {
+                if reputation > 0 {
+                    self.game_data.reputation = (self.game_data.reputation.saturating_add(reputation as u8)).min(5);
+                } else {
+                    self.game_data.reputation = self.game_data.reputation.saturating_sub((-reputation) as u8).max(1);
+                }
+            }
+            
+            // Add temporary modifiers
+            self.game_data.random_events.temp_modifiers.extend(modifiers);
+            
+            // Log the choice result
+            let activity = "✅ Made choice on random event".to_string();
+            self.game_data.recent_activities.insert(0, activity);
+            if self.game_data.recent_activities.len() > 10 {
+                self.game_data.recent_activities.truncate(10);
+            }
+            
+            // Event will be automatically cleared and screen switched in check_for_active_events
+        }
+    }
 
     fn next_menu_item(&mut self) {
         let menu_items = match self.screen {
@@ -1867,6 +1930,14 @@ impl App {
             Screen::Market => 5, // 5 market items
             Screen::Orders => self.game_data.customer_orders.len().max(1), // Number of orders
             Screen::Inventory => self.game_data.inventory.len().max(1), // Number of inventory items
+            Screen::RandomEvent => {
+                // Get number of choices for active event
+                if let Some(event) = &self.game_data.random_events.active_event {
+                    event.get_choices().len().max(1)
+                } else {
+                    1
+                }
+            },
             _ => 1, // Other screens typically have minimal navigation
         };
         self.selected_menu_item = (self.selected_menu_item + 1) % menu_items;
@@ -1879,6 +1950,14 @@ impl App {
             Screen::Market => 5,
             Screen::Orders => self.game_data.customer_orders.len().max(1),
             Screen::Inventory => self.game_data.inventory.len().max(1),
+            Screen::RandomEvent => {
+                // Get number of choices for active event
+                if let Some(event) = &self.game_data.random_events.active_event {
+                    event.get_choices().len().max(1)
+                } else {
+                    1
+                }
+            },
             _ => 1,
         };
         if self.selected_menu_item > 0 {
@@ -1927,6 +2006,11 @@ impl App {
             Screen::Orders => {
                 // Fulfill customer order (stay on orders screen)
                 self.fulfill_customer_order();
+                return; // Don't reset selection
+            }
+            Screen::RandomEvent => {
+                // Handle random event choice
+                self.handle_random_event_choice();
                 return; // Don't reset selection
             }
             _ => {
@@ -2034,6 +2118,9 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Result<(
         // Update game time
         app.update_time();
         
+        // Check for active random events that need player choice
+        app.check_for_active_events();
+        
         terminal.draw(|f| ui(f, &app))?;
 
         // Use poll instead of read to avoid blocking
@@ -2100,6 +2187,7 @@ fn ui(f: &mut Frame, app: &App) {
         Screen::Analytics => draw_analytics(f, app),
         Screen::Achievements => draw_achievements_screen(f, app),
         Screen::Settings => draw_placeholder(f, "Settings", "Game configuration"),
+        Screen::RandomEvent => draw_random_event(f, app),
     }
 }
 
@@ -2186,15 +2274,41 @@ fn draw_dashboard(f: &mut Frame, app: &App) {
         String::new()
     };
     
+    // Add animated time progression indicator
+    let time_indicator = if app.paused {
+        "⏸️"
+    } else {
+        // Cycle through different clock symbols for visual time progression
+        match (app.game_data.minute / 10) % 6 {
+            0 => "🕐",
+            1 => "🕑",
+            2 => "🕒",
+            3 => "🕓",
+            4 => "🕔",
+            _ => "🕕",
+        }
+    };
+    
+    // Add random event indicator if active
+    let random_event_status = if app.game_data.random_events.player_choice_pending {
+        " 🎲❗"
+    } else if app.game_data.random_events.temp_modifiers.len() > 0 {
+        " 🎲✨"
+    } else {
+        ""
+    };
+    
     let header_text = format!(
-        "Cash: ${}    Rep: {} ({})    Day: {}    Time: {}    Season: {}{}",
+        "Cash: ${}    Rep: {} ({})    Day: {}    Time: {} {}    Season: {}{}{}",
         app.game_data.cash,
         app.game_data.reputation_stars(),
         app.game_data.reputation_description(),
         app.game_data.day,
         app.game_data.time_display(),
+        time_indicator,
         season,
-        events_info
+        events_info,
+        random_event_status
     );
     
     let header = Paragraph::new(header_text)
@@ -2326,12 +2440,25 @@ fn draw_market(f: &mut Frame, app: &App) {
         .map(|(retailer, value, base_cost, stock)| {
             let price_multiplier = app.game_data.market_conditions.get_price_multiplier_with_random_events(retailer, &app.game_data.random_events);
             let actual_cost = (*base_cost as f32 * price_multiplier).round() as u32;
-            let trend = if price_multiplier > 1.1 {
-                "↗".to_string() // Rising
+            // More detailed animated trend indicators
+            let trend = if price_multiplier > 1.2 {
+                match (app.game_data.minute / 5) % 3 {
+                    0 => "🔥↗".to_string(),
+                    1 => "🚀↗".to_string(), 
+                    _ => "📈↗".to_string(),
+                }
+            } else if price_multiplier > 1.1 {
+                "📈↗".to_string() // Rising
+            } else if price_multiplier < 0.8 {
+                match (app.game_data.minute / 5) % 3 {
+                    0 => "💎↘".to_string(),
+                    1 => "🎯↘".to_string(),
+                    _ => "📉↘".to_string(),
+                }
             } else if price_multiplier < 0.9 {
-                "↘".to_string() // Falling  
+                "📉↘".to_string() // Falling  
             } else {
-                "→".to_string() // Stable
+                "➡️".to_string() // Stable
             };
             (retailer.to_string(), *value, actual_cost, *stock, trend)
         })
@@ -2555,11 +2682,23 @@ fn draw_inventory(f: &mut Frame, app: &App) {
             let profit_per_card = market_value as i32 - item.card.purchase_price as i32;
             let total_profit = profit_per_card * item.quantity as i32;
             
-            // Show expiration warning
-            let expiration_indicator = if item.card.is_expiring_soon() {
-                "❗"
+            // Enhanced expiration indicators with animation
+            let expiration_indicator = if item.card.days_until_expiration <= 3 {
+                // Critical - blinking warning
+                match (app.game_data.minute / 3) % 3 {
+                    0 => "🚨",
+                    1 => "❗",
+                    _ => "⚠️",
+                }
+            } else if item.card.days_until_expiration <= 7 {
+                // Warning - steady indicator
+                "⚠️"
+            } else if item.card.days_until_expiration <= 14 {
+                // Caution - mild indicator
+                "⚡"
             } else {
-                " "
+                // Fresh - good indicator
+                "✅"
             };
             
             table_content.push(format!(
@@ -3000,6 +3139,93 @@ fn draw_placeholder(f: &mut Frame, title: &str, description: &str) {
         .alignment(Alignment::Center);
 
     f.render_widget(placeholder, size);
+}
+
+fn draw_random_event(f: &mut Frame, app: &App) {
+    let size = f.area();
+    
+    if let Some(event) = &app.game_data.random_events.active_event {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .margin(2)
+            .constraints([
+                Constraint::Length(3),  // Header
+                Constraint::Min(6),     // Event content
+                Constraint::Length(3),  // Instructions
+            ])
+            .split(size);
+        
+        // Header
+        let header = Paragraph::new("🎲 Random Event - Choose Your Response")
+            .block(Block::default()
+                .borders(Borders::ALL)
+                .style(Style::default().fg(Color::Yellow)))
+            .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+            .alignment(Alignment::Center);
+        f.render_widget(header, chunks[0]);
+        
+        // Event content
+        let event_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(4),  // Title and description
+                Constraint::Min(2),     // Choices
+            ])
+            .split(chunks[1]);
+        
+        // Event title and description
+        let event_content = format!("{}\n\n{}", event.title, event.description);
+        let event_text = Paragraph::new(event_content)
+            .block(Block::default()
+                .title("Event Details")
+                .borders(Borders::ALL)
+                .style(Style::default().fg(Color::White)))
+            .style(Style::default().fg(Color::White))
+            .wrap(Wrap { trim: true });
+        f.render_widget(event_text, event_chunks[0]);
+        
+        // Choices
+        let choice_items: Vec<ListItem> = event.get_choices().iter().enumerate()
+            .map(|(i, choice)| {
+                let style = if i == app.selected_menu_item {
+                    Style::default().fg(Color::Black).bg(Color::Yellow)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                ListItem::new(choice.to_string()).style(style)
+            })
+            .collect();
+        
+        let choices_list = List::new(choice_items)
+            .block(Block::default()
+                .title("Your Choices")
+                .borders(Borders::ALL)
+                .style(Style::default().fg(Color::White)))
+            .highlight_style(Style::default().fg(Color::Black).bg(Color::Yellow));
+        
+        f.render_widget(choices_list, event_chunks[1]);
+        
+        // Instructions
+        let instructions = Paragraph::new("↑/↓: Navigate  Enter: Select Choice  Time remaining: ⏰")
+            .block(Block::default()
+                .borders(Borders::ALL)
+                .style(Style::default().fg(Color::Gray)))
+            .style(Style::default().fg(Color::Gray))
+            .alignment(Alignment::Center);
+        f.render_widget(instructions, chunks[2]);
+        
+    } else {
+        // No active event - this shouldn't happen but handle gracefully
+        let content = "No active random event.\n\nReturning to dashboard...";
+        let placeholder = Paragraph::new(content)
+            .block(Block::default()
+                .title("Random Events")
+                .borders(Borders::ALL)
+                .style(Style::default().fg(Color::White)))
+            .style(Style::default().fg(Color::White))
+            .alignment(Alignment::Center);
+        f.render_widget(placeholder, size);
+    }
 }
 
 #[cfg(test)]

@@ -3204,12 +3204,18 @@ fn draw_achievements_screen(f: &mut Frame, app: &App) {
     let unlocked_count = app.game_data.achievements.total_unlocked;
     let total_rewards = app.game_data.achievements.calculate_total_rewards();
     
+    let completion_percentage = if total_achievements == 0 {
+        0.0
+    } else {
+        (unlocked_count as f32 / total_achievements as f32) * 100.0
+    };
+    
     let header_text = format!(
         "Achievements: {}/{}    Total Rewards: ${}    Completion: {:.1}%",
         unlocked_count,
         total_achievements,
         total_rewards,
-        (unlocked_count as f32 / total_achievements as f32) * 100.0
+        completion_percentage
     );
     
     let header = Paragraph::new(header_text)
@@ -3277,8 +3283,8 @@ fn draw_achievements_screen(f: &mut Frame, app: &App) {
     
     // Add in-progress achievements first
     for achievement in in_progress {
-        let progress_bar_length = (achievement.progress_percentage() / 100.0 * 20.0) as usize;
-        let progress_bar = "█".repeat(progress_bar_length) + &"░".repeat(20 - progress_bar_length);
+        let progress_bar_length = ((achievement.progress_percentage() / 100.0 * 20.0) as usize).min(20);
+        let progress_bar = "█".repeat(progress_bar_length) + &"░".repeat(20_usize.saturating_sub(progress_bar_length));
         let content = format!(
             "📈 {} ({}/{})\n   {}\n   [{}] {:.1}%",
             achievement.name,

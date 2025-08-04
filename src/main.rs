@@ -2885,8 +2885,8 @@ fn draw_inventory(f: &mut Frame, app: &App) {
     } else {
         // Create table header and rows
         let mut table_content = vec![
-            "   Card           │ Qty │ Cost │ Days Left │ Market Price │ Profit │ Action".to_string(),
-            "──────────────────┼─────┼──────┼───────────┼──────────────┼────────┼───────".to_string(),
+            "   Card          │ Qty │ Cost │ Days Left │ Market Price │ Profit │ Action".to_string(),
+            "─────────────────┼─────┼──────┼───────────┼──────────────┼────────┼───────".to_string(),
         ];
 
         for (i, item) in app.game_data.inventory.iter().enumerate() {

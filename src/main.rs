@@ -3252,15 +3252,15 @@ fn draw_achievements_screen(f: &mut Frame, app: &App) {
             let unlock_day = achievement.unlock_date.unwrap_or(0);
             let lines = vec![
                 Line::from(Span::styled(
-                    format!("🏆 {} (+${})", achievement.name, achievement.reward_cash),
+                    format!("[*] {} (+${})", achievement.name, achievement.reward_cash),
                     Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
                 )),
                 Line::from(Span::styled(
-                    format!("   {}", achievement.description),
+                    format!("    {}", achievement.description),
                     Style::default().fg(Color::Yellow)
                 )),
                 Line::from(Span::styled(
-                    format!("   Unlocked: Day {}", unlock_day),
+                    format!("    Unlocked: Day {}", unlock_day),
                     Style::default().fg(Color::Yellow)
                 )),
             ];
@@ -3271,7 +3271,7 @@ fn draw_achievements_screen(f: &mut Frame, app: &App) {
 
     let unlocked_list = List::new(unlocked_items)
         .block(Block::default()
-            .title(format!("🏆 Unlocked ({}/{})", unlocked_count, total_achievements))
+            .title(format!("* Unlocked ({}/{})", unlocked_count, total_achievements))
             .borders(Borders::ALL)
             .style(Style::default().fg(Color::White)))
         .style(Style::default().fg(Color::White));
@@ -3291,19 +3291,19 @@ fn draw_achievements_screen(f: &mut Frame, app: &App) {
     // Add in-progress achievements first
     for achievement in in_progress {
         let progress_bar_length = ((achievement.progress_percentage() / 100.0 * 20.0) as usize).min(20);
-        let progress_bar = "█".repeat(progress_bar_length) + &"░".repeat(20_usize.saturating_sub(progress_bar_length));
+        let progress_bar = "=".repeat(progress_bar_length) + &"-".repeat(20_usize.saturating_sub(progress_bar_length));
         
         let lines = vec![
             Line::from(Span::styled(
-                format!("📈 {} ({}/{})", achievement.name, achievement.progress, achievement.target),
+                format!("[>] {} ({}/{})", achievement.name, achievement.progress, achievement.target),
                 Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
             )),
             Line::from(Span::styled(
-                format!("   {}", achievement.description),
+                format!("    {}", achievement.description),
                 Style::default().fg(Color::Cyan)
             )),
             Line::from(Span::styled(
-                format!("   [{}] {:.1}%", progress_bar, achievement.progress_percentage()),
+                format!("    [{}] {:.1}%", progress_bar, achievement.progress_percentage()),
                 Style::default().fg(Color::Cyan)
             )),
         ];
@@ -3316,15 +3316,15 @@ fn draw_achievements_screen(f: &mut Frame, app: &App) {
     for achievement in remaining_achievements {
         let lines = vec![
             Line::from(Span::styled(
-                format!("🔒 {} (Reward: ${})", achievement.name, achievement.reward_cash),
+                format!("[-] {} (Reward: ${})", achievement.name, achievement.reward_cash),
                 Style::default().fg(Color::Gray).add_modifier(Modifier::BOLD)
             )),
             Line::from(Span::styled(
-                format!("   {}", achievement.description),
+                format!("    {}", achievement.description),
                 Style::default().fg(Color::Gray)
             )),
             Line::from(Span::styled(
-                format!("   Progress: {}/{}", achievement.progress, achievement.target),
+                format!("    Progress: {}/{}", achievement.progress, achievement.target),
                 Style::default().fg(Color::Gray)
             )),
         ];
@@ -3348,7 +3348,7 @@ fn draw_achievements_screen(f: &mut Frame, app: &App) {
 
     let progress_list = List::new(progress_items)
         .block(Block::default()
-            .title("📊 Progress & Locked")
+            .title("> Progress & Locked")
             .borders(Borders::ALL)
             .style(Style::default().fg(Color::White)))
         .style(Style::default().fg(Color::White));

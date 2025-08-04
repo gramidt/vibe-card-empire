@@ -3311,8 +3311,9 @@ fn draw_achievements_screen(f: &mut Frame, app: &App) {
         progress_items.push(ListItem::new(Text::from(lines)));
     }
 
-    // Add some locked achievements
-    remaining_achievements.truncate(5 - progress_items.len());
+    // Add some locked achievements (only if we have room for more)
+    let remaining_slots = if progress_items.len() >= 5 { 0 } else { 5 - progress_items.len() };
+    remaining_achievements.truncate(remaining_slots);
     for achievement in remaining_achievements {
         let lines = vec![
             Line::from(Span::styled(

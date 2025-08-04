@@ -2885,8 +2885,8 @@ fn draw_inventory(f: &mut Frame, app: &App) {
     } else {
         // Create table header and rows
         let mut table_content = vec![
-            "   Card        │ Qty │ Cost │ Days Left │ Market Price │ Profit │ Action".to_string(),
-            "───────────────┼─────┼──────┼───────────┼──────────────┼────────┼───────".to_string(),
+            "   Card           │ Qty │ Cost │ Days Left │ Market Price │ Profit │ Action".to_string(),
+            "──────────────────┼─────┼──────┼───────────┼──────────────┼────────┼───────".to_string(),
         ];
 
         for (i, item) in app.game_data.inventory.iter().enumerate() {
@@ -2916,11 +2916,14 @@ fn draw_inventory(f: &mut Frame, app: &App) {
                 "✅"
             };
             
+            // Format retailer name with padding
+            let retailer_display = format!("{:<10}", item.card.retailer);
+            
             table_content.push(format!(
-                "{}{} {} ${:2} │  {:2} │ ${:2} │    {:3}    │     ${:2}     │  ${:3}  │ [Sell]",
+                "{}{} {} ${:>2} │ {:>3} │ ${:>3} │    {:>3}    │     ${:>3}     │  ${:>4} │ [Sell]",
                 style_char,
                 expiration_indicator,
-                item.card.retailer,
+                retailer_display,
                 item.card.denomination,
                 item.quantity,
                 item.card.purchase_price,

@@ -7,7 +7,7 @@ use ratatui::{
     backend::{Backend, CrosstermBackend},
     layout::{Constraint, Direction, Layout, Alignment},
     style::{Color, Modifier, Style},
-    text::{Line, Span},
+    text::{Line, Span, Text},
     widgets::{Block, Borders, List, ListItem, Paragraph, Table, Row, Cell, Wrap},
     Frame, Terminal,
 };
@@ -3250,18 +3250,22 @@ fn draw_achievements_screen(f: &mut Frame, app: &App) {
     } else {
         unlocked.iter().map(|achievement| {
             let unlock_day = achievement.unlock_date.unwrap_or(0);
-            let content = format!(
-                "🏆 {} (+${})\n   {}\n   Unlocked: Day {}",
-                achievement.name,
-                achievement.reward_cash,
-                achievement.description,
-                unlock_day
-            );
+            let lines = vec![
+                Line::from(Span::styled(
+                    format!("🏆 {} (+${})", achievement.name, achievement.reward_cash),
+                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                )),
+                Line::from(Span::styled(
+                    format!("   {}", achievement.description),
+                    Style::default().fg(Color::Yellow)
+                )),
+                Line::from(Span::styled(
+                    format!("   Unlocked: Day {}", unlock_day),
+                    Style::default().fg(Color::Yellow)
+                )),
+            ];
             
-            ListItem::new(Line::from(Span::styled(
-                content,
-                Style::default().fg(Color::Yellow)
-            )))
+            ListItem::new(Text::from(lines))
         }).collect()
     };
 
@@ -3288,45 +3292,58 @@ fn draw_achievements_screen(f: &mut Frame, app: &App) {
     for achievement in in_progress {
         let progress_bar_length = ((achievement.progress_percentage() / 100.0 * 20.0) as usize).min(20);
         let progress_bar = "█".repeat(progress_bar_length) + &"░".repeat(20_usize.saturating_sub(progress_bar_length));
-        let content = format!(
-            "📈 {} ({}/{})\n   {}\n   [{}] {:.1}%",
-            achievement.name,
-            achievement.progress,
-            achievement.target,
-            achievement.description,
-            progress_bar,
-            achievement.progress_percentage()
-        );
         
-        progress_items.push(ListItem::new(Line::from(Span::styled(
-            content,
-            Style::default().fg(Color::Cyan)
-        ))));
+        let lines = vec![
+            Line::from(Span::styled(
+                format!("📈 {} ({}/{})", achievement.name, achievement.progress, achievement.target),
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+            )),
+            Line::from(Span::styled(
+                format!("   {}", achievement.description),
+                Style::default().fg(Color::Cyan)
+            )),
+            Line::from(Span::styled(
+                format!("   [{}] {:.1}%", progress_bar, achievement.progress_percentage()),
+                Style::default().fg(Color::Cyan)
+            )),
+        ];
+        
+        progress_items.push(ListItem::new(Text::from(lines)));
     }
 
     // Add some locked achievements
     remaining_achievements.truncate(5 - progress_items.len());
     for achievement in remaining_achievements {
-        let content = format!(
-            "🔒 {} (Reward: ${})\n   {}\n   Progress: {}/{}",
-            achievement.name,
-            achievement.reward_cash,
-            achievement.description,
-            achievement.progress,
-            achievement.target
-        );
+        let lines = vec![
+            Line::from(Span::styled(
+                format!("🔒 {} (Reward: ${})", achievement.name, achievement.reward_cash),
+                Style::default().fg(Color::Gray).add_modifier(Modifier::BOLD)
+            )),
+            Line::from(Span::styled(
+                format!("   {}", achievement.description),
+                Style::default().fg(Color::Gray)
+            )),
+            Line::from(Span::styled(
+                format!("   Progress: {}/{}", achievement.progress, achievement.target),
+                Style::default().fg(Color::Gray)
+            )),
+        ];
         
-        progress_items.push(ListItem::new(Line::from(Span::styled(
-            content,
-            Style::default().fg(Color::Gray)
-        ))));
+        progress_items.push(ListItem::new(Text::from(lines)));
     }
 
     if progress_items.is_empty() {
-        progress_items.push(ListItem::new(Line::from(Span::styled(
-            "All achievements unlocked!\nCongratulations!",
-            Style::default().fg(Color::Green)
-        ))));
+        let lines = vec![
+            Line::from(Span::styled(
+                "All achievements unlocked!",
+                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+            )),
+            Line::from(Span::styled(
+                "Congratulations!",
+                Style::default().fg(Color::Green)
+            )),
+        ];
+        progress_items.push(ListItem::new(Text::from(lines)));
     }
 
     let progress_list = List::new(progress_items)
